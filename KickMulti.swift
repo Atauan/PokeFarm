@@ -1,0 +1,1728 @@
+import SwiftUI
+import WebKit
+import IOKit.pwr_mgt
+import UserNotifications
+
+// MARK: - Modelo
+
+enum Platform: String, CaseIterable, Identifiable, Codable {
+    case kick, twitch
+    var id: String { rawValue }
+    var title: String { self == .kick ? "Kick" : "Twitch" }
+    var color: Color { self == .kick ? Color(red: 0.33, green: 0.93, blue: 0.1) : Color(red: 0.57, green: 0.27, blue: 1.0) }
+    var host: String { self == .kick ? "kick.com" : "twitch.tv" }
+
+    func playerURL(_ channel: String, muted: Bool) -> URL {
+        switch self {
+        case .kick:
+            return URL(string: "https://player.kick.com/\(channel)?autoplay=true&muted=\(muted)")!
+        case .twitch:
+            // Página completa do canal: o player avulso/embutido não conta pontos de canal.
+            // O CSS injetado deixa só o vídeo visível.
+            return URL(string: "https://www.twitch.tv/\(channel)")!
+        }
+    }
+
+    func chatURL(_ channel: String) -> URL {
+        switch self {
+        case .kick: return URL(string: "https://kick.com/popout/\(channel)/chat")!
+        case .twitch: return URL(string: "https://www.twitch.tv/popout/\(channel)/chat?popout=")!
+        }
+    }
+
+    var loginURL: URL {
+        self == .kick ? URL(string: "https://kick.com/")! : URL(string: "https://www.twitch.tv/login")!
+    }
+}
+
+enum AppTab: String, CaseIterable, Identifiable {
+    case lives, game, alerts
+    var id: String { rawValue }
+    var title: String { ["lives": "Lives", "game": "Pokeidle", "alerts": "Alertas"][rawValue]! }
+}
+
+struct StreamItem: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var channel: String
+    var muted = true
+    var reloadToken = 0
+}
+
+/// Item da grade (plataforma + canal)
+struct Entry: Identifiable {
+    let platform: Platform
+    let item: StreamItem
+    var id: UUID { item.id }
+}
+
+final class Store: ObservableObject {
+    @Published var kick: [StreamItem] = [] { didSet { save(kick, "streams.v1") } }
+    @Published var twitch: [StreamItem] = [] { didSet { save(twitch, "twitch.v1") } }
+    @Published var columns: Int = UserDefaults.standard.integer(forKey: "columns") {
+        didSet { UserDefaults.standard.set(columns, forKey: "columns") }
+    }
+    /// Pesos de tamanho: largura de cada bloco (por id) e altura de cada linha ("r0", "r1"...)
+    @Published var tileWeights: [String: Double] =
+        UserDefaults.standard.dictionary(forKey: "tileWeights") as? [String: Double] ?? [:]
+    @Published var rowWeights: [String: Double] =
+        UserDefaults.standard.dictionary(forKey: "rowWeights") as? [String: Double] ?? [:]
+
+    func saveSizes() {
+        UserDefaults.standard.set(tileWeights, forKey: "tileWeights")
+        UserDefaults.standard.set(rowWeights, forKey: "rowWeights")
+        UserDefaults.standard.set(freeFrames, forKey: "freeFrames")
+    }
+
+    /// Posição/tamanho livre de cada bloco (x, y, largura, altura em fração da área), por id
+    @Published var freeFrames: [String: [Double]] =
+        UserDefaults.standard.dictionary(forKey: "freeFrames") as? [String: [Double]] ?? [:]
+    /// Bloco que fica por cima (o último mexido)
+    @Published var frontTile: String?
+
+    func resetSizes() {
+        tileWeights = [:]; rowWeights = [:]; freeFrames = [:]; saveSizes()
+    }
+    @Published var showChat: Bool = UserDefaults.standard.object(forKey: "showChat") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(showChat, forKey: "showChat") }
+    }
+    @Published var tab: AppTab = AppTab(rawValue: UserDefaults.standard.string(forKey: "tab") ?? "") ?? .lives {
+        didSet { UserDefaults.standard.set(tab.rawValue, forKey: "tab") }
+    }
+    @Published var gameReload = 0
+
+    init() {
+        kick = Store.load("streams.v1")
+        twitch = Store.load("twitch.v1")
+    }
+
+    var all: [Entry] {
+        kick.map { Entry(platform: .kick, item: $0) } + twitch.map { Entry(platform: .twitch, item: $0) }
+    }
+
+    private static func load(_ key: String) -> [StreamItem] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let decoded = try? JSONDecoder().decode([StreamItem].self, from: data) else { return [] }
+        return decoded
+    }
+
+    private func save(_ items: [StreamItem], _ key: String) {
+        if let data = try? JSONEncoder().encode(items) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    func list(_ p: Platform) -> [StreamItem] { p == .kick ? kick : twitch }
+
+    private func set(_ p: Platform, _ items: [StreamItem]) {
+        if p == .kick { kick = items } else { twitch = items }
+    }
+
+    static func clean(_ raw: String) -> String? {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !s.isEmpty else { return nil }
+        if let q = s.firstIndex(where: { $0 == "?" || $0 == "#" }) { s = String(s[..<q]) }
+        if let last = s.split(separator: "/").last { s = String(last) }
+        guard !s.isEmpty,
+              s.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" })
+        else { return nil }
+        return s
+    }
+
+    /// Se o texto for um link, detecta a plataforma pelo domínio; senão usa a padrão.
+    func add(_ text: String, default def: Platform) {
+        let parts = text.components(separatedBy: CharacterSet(charactersIn: ", \n\t"))
+        for raw in parts {
+            guard let c = Store.clean(raw) else { continue }
+            let low = raw.lowercased()
+            let p: Platform = low.contains("twitch.tv") ? .twitch : (low.contains("kick.com") ? .kick : def)
+            var items = list(p)
+            if !items.contains(where: { $0.channel == c }) {
+                items.append(StreamItem(channel: c))
+                set(p, items)
+            }
+        }
+    }
+
+    func update(_ id: UUID, _ p: Platform, _ change: (inout StreamItem) -> Void) {
+        var items = list(p)
+        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
+        change(&items[i])
+        set(p, items)
+    }
+
+    func remove(_ id: UUID, _ p: Platform) { set(p, list(p).filter { $0.id != id }) }
+
+    func muteAll() {
+        kick = kick.map { var s = $0; s.muted = true; return s }
+        twitch = twitch.map { var s = $0; s.muted = true; return s }
+    }
+
+    func reloadAll() {
+        kick = kick.map { var s = $0; s.reloadToken += 1; return s }
+        twitch = twitch.map { var s = $0; s.reloadToken += 1; return s }
+    }
+
+    func clear(_ p: Platform) { set(p, []) }
+}
+
+// MARK: - WebViews compartilhados
+
+enum Web {
+    static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+
+    /// Todos usam o mesmo armazenamento: o login feito em qualquer janela vale para todas.
+    static func config() -> WKWebViewConfiguration {
+        let cfg = WKWebViewConfiguration()
+        cfg.websiteDataStore = .default()
+        cfg.mediaTypesRequiringUserActionForPlayback = []
+        if #available(macOS 14.0, *) {
+            // Não pausar/desacelerar as lives quando a janela estiver em segundo plano
+            cfg.preferences.inactiveSchedulingPolicy = .none
+        }
+        return cfg
+    }
+
+    static func make(_ cfg: WKWebViewConfiguration = config()) -> WKWebView {
+        let wv = WKWebView(frame: .zero, configuration: cfg)
+        wv.customUserAgent = userAgent
+        wv.allowsBackForwardNavigationGestures = false
+        wv.uiDelegate = Popups.shared
+        wv.navigationDelegate = Recovery.shared
+        // Sem fundo branco enquanto a página não pinta (o bloco por trás é preto)
+        wv.setValue(false, forKey: "drawsBackground")
+        if #available(macOS 12.0, *) { wv.underPageBackgroundColor = .black }
+        return wv
+    }
+
+    /// Script de "manter vivo" injetado em todas as páginas (lives, chats e jogo):
+    /// - finge que a página está sempre visível (tela bloqueada/janela minimizada não pausa nada)
+    /// - volta a dar play em vídeos que o navegador pausou sozinho
+    static let keepAliveJS = """
+    (function () {
+      try {
+        Object.defineProperty(document, 'hidden', { get: function () { return false; } });
+        Object.defineProperty(document, 'visibilityState', { get: function () { return 'visible'; } });
+        Object.defineProperty(document, 'webkitHidden', { get: function () { return false; } });
+        Object.defineProperty(document, 'webkitVisibilityState', { get: function () { return 'visible'; } });
+        document.hasFocus = function () { return true; };
+        ['visibilitychange', 'webkitvisibilitychange'].forEach(function (ev) {
+          document.addEventListener(ev, function (e) { e.stopImmediatePropagation(); }, true);
+        });
+        ['blur', 'pagehide', 'freeze'].forEach(function (ev) {
+          window.addEventListener(ev, function (e) { e.stopImmediatePropagation(); }, true);
+        });
+      } catch (e) {}
+      setInterval(function () {
+        document.querySelectorAll('video').forEach(function (v) {
+          // Qualquer vídeo parado volta a tocar (mudo, então o navegador permite sem clique)
+          if (v.paused && !v.ended) {
+            if (window.__kmMuted !== false) { v.muted = true; }
+            v.play().catch(function () {});
+          }
+        });
+      }, 5000);
+    })();
+    """
+
+    static func keepAliveScript(mainFrameOnly: Bool = false) -> WKUserScript {
+        WKUserScript(source: keepAliveJS, injectionTime: .atDocumentStart, forMainFrameOnly: mainFrameOnly)
+    }
+}
+
+// MARK: - Skeleton (carregando)
+
+/// Esqueleto animado por cima do WebView enquanto a página carrega. Não bloqueia cliques.
+final class SkeletonView: NSView {
+    enum Style { case video, chat, game }
+
+    private let style: Style
+    private let shimmer = CAGradientLayer()
+    private var bones: [CALayer] = []
+    private static let base = NSColor(red: 0.06, green: 0.06, blue: 0.07, alpha: 1).cgColor
+    private static let bone = NSColor(red: 0.13, green: 0.13, blue: 0.15, alpha: 1).cgColor
+
+    init(style: Style) {
+        self.style = style
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = Self.base
+        let count: Int
+        switch style {
+        case .video: count = 4
+        case .chat: count = 3
+        case .game: count = 15
+        }
+        for _ in 0..<count {
+            let b = CALayer()
+            b.backgroundColor = Self.bone
+            b.cornerRadius = 6
+            layer?.addSublayer(b)
+            bones.append(b)
+        }
+        shimmer.colors = [NSColor.clear.cgColor, NSColor(white: 1, alpha: 0.07).cgColor, NSColor.clear.cgColor]
+        shimmer.startPoint = CGPoint(x: 0, y: 0.5)
+        shimmer.endPoint = CGPoint(x: 1, y: 0.5)
+        layer?.addSublayer(shimmer)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) não usado") }
+
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }   // cliques passam para a página
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let w = bounds.width, h = bounds.height
+        switch style {
+        case .video:
+            // área do vídeo, botão de play e duas linhas embaixo
+            bones[0].frame = CGRect(x: 8, y: 8, width: w - 16, height: max(h - 46, 10))
+            bones[0].backgroundColor = NSColor(red: 0.09, green: 0.09, blue: 0.11, alpha: 1).cgColor
+            let d = min(min(w, h) * 0.22, 56)
+            bones[1].frame = CGRect(x: (w - d) / 2, y: (h - 46 - d) / 2 + 8, width: d, height: d)
+            bones[1].cornerRadius = d / 2
+            bones[2].frame = CGRect(x: 8, y: h - 30, width: w * 0.45, height: 8)
+            bones[3].frame = CGRect(x: 8, y: h - 16, width: w * 0.28, height: 8)
+        case .chat:
+            // só o rodapé fica visível na faixa: ícone + barra + botão
+            bones[0].frame = CGRect(x: 10, y: h - 34, width: 22, height: 22)
+            bones[0].cornerRadius = 11
+            bones[1].frame = CGRect(x: 40, y: h - 28, width: max(w * 0.35, 30), height: 10)
+            bones[2].frame = CGRect(x: w - 64, y: h - 36, width: 54, height: 26)
+        case .game:
+            // barra do topo, menu lateral e grade de cards
+            bones[0].frame = CGRect(x: 0, y: 0, width: w, height: 48)
+            bones[0].cornerRadius = 0
+            for i in 0..<6 {
+                bones[1 + i].frame = CGRect(x: 16, y: 72 + CGFloat(i) * 40, width: 160, height: 24)
+            }
+            let gx: CGFloat = 200, gy: CGFloat = 72
+            let cw = max((w - gx - 16 - 32) / 4, 40), ch = max(min((h - gy - 32) / 2, 220), 40)
+            for i in 0..<8 {
+                bones[7 + i].frame = CGRect(x: gx + CGFloat(i % 4) * (cw + 10), y: gy + CGFloat(i / 4) * (ch + 12),
+                                            width: cw, height: ch)
+            }
+        }
+        shimmer.frame = CGRect(x: -w, y: 0, width: w, height: h)
+        CATransaction.commit()
+        restartShimmer()
+    }
+
+    private func restartShimmer() {
+        shimmer.removeAllAnimations()
+        guard !isHidden, bounds.width > 0 else { return }
+        let a = CABasicAnimation(keyPath: "position.x")
+        a.fromValue = -bounds.width / 2
+        a.toValue = bounds.width * 1.5
+        a.duration = 1.4
+        a.repeatCount = .infinity
+        shimmer.add(a, forKey: "shimmer")
+    }
+
+    func show() {
+        guard isHidden || alphaValue < 1 else { return }
+        isHidden = false
+        alphaValue = 1
+        restartShimmer()
+    }
+
+    func hide() {
+        guard !isHidden else { return }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.25
+            animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            guard let self, self.alphaValue == 0 else { return }
+            self.isHidden = true
+            self.shimmer.removeAllAnimations()
+        })
+    }
+}
+
+enum Skeleton {
+    private static var key = 0
+
+    /// Mostra o esqueleto sempre que a página começa a carregar e some logo depois que termina.
+    static func attach(_ wv: WKWebView, style: SkeletonView.Style) {
+        let sk = SkeletonView(style: style)
+        sk.frame = wv.bounds
+        sk.autoresizingMask = [.width, .height]
+        wv.addSubview(sk)
+        let obs = wv.observe(\.isLoading, options: [.new]) { [weak sk] wv, _ in
+            DispatchQueue.main.async {
+                guard let sk else { return }
+                if wv.isLoading {
+                    sk.show()
+                } else {
+                    // pequena espera: o vídeo/jogo costuma pintar logo após o "terminou"
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        if !wv.isLoading { sk.hide() }
+                    }
+                }
+            }
+        }
+        objc_setAssociatedObject(wv, &key, obs, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    }
+}
+
+/// Se o processo de uma página travar/morrer (comum em 24h rodando), recarrega sozinho.
+final class Recovery: NSObject, WKNavigationDelegate {
+    static let shared = Recovery()
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        webView.reload()
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        if isNetworkError(error) { retry(webView, error) }
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if isNetworkError(error) { retry(webView, error) }
+    }
+
+    /// Só reage a falhas de rede de verdade (ignora navegações canceladas/substituídas).
+    private func isNetworkError(_ error: Error) -> Bool {
+        let e = error as NSError
+        guard e.domain == NSURLErrorDomain else { return false }
+        return [NSURLErrorNotConnectedToInternet, NSURLErrorNetworkConnectionLost, NSURLErrorTimedOut,
+                NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost, NSURLErrorDNSLookupFailed]
+            .contains(e.code)
+    }
+
+    /// Sem internet (ex.: Wi-Fi caiu): tenta de novo em 30 s.
+    private func retry(_ webView: WKWebView, _ error: Error) {
+        let failed = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak webView] in
+            guard let wv = webView, !wv.isLoading else { return }
+            if let url = failed ?? wv.url { wv.load(URLRequest(url: url)) } else { wv.reload() }
+        }
+    }
+}
+
+/// Abre pop-ups (ex.: login) em janelas próprias em vez de bloquear.
+final class Popups: NSObject, WKUIDelegate, NSWindowDelegate {
+    static let shared = Popups()
+    private var windows: [NSWindow] = []
+
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        makeWindow(configuration: configuration, title: "Entrar")
+    }
+
+    func webViewDidClose(_ webView: WKWebView) { webView.window?.close() }
+
+    func windowWillClose(_ n: Notification) {
+        if let w = n.object as? NSWindow { windows.removeAll { $0 === w } }
+    }
+
+    @discardableResult
+    func makeWindow(configuration: WKWebViewConfiguration, title: String) -> WKWebView {
+        let rect = NSRect(x: 0, y: 0, width: 520, height: 760)
+        let wv = Web.make(configuration)
+        wv.frame = rect
+        let w = NSWindow(contentRect: rect, styleMask: [.titled, .closable, .resizable, .miniaturizable],
+                         backing: .buffered, defer: false)
+        w.title = title
+        w.isReleasedWhenClosed = false
+        w.contentView = wv
+        w.delegate = self
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        windows.append(w)
+        return wv
+    }
+
+    func openLogin(_ p: Platform) {
+        let wv = makeWindow(configuration: Web.config(), title: "Entrar na \(p.title)")
+        wv.load(URLRequest(url: p.loginURL))
+    }
+}
+
+// MARK: - Player
+
+struct LivePlayer: NSViewRepresentable {
+    let item: StreamItem
+    let platform: Platform
+
+    final class Coordinator {
+        var loadedKey = ""
+        var lastMuted: Bool?
+        weak var webView: WKWebView?
+        var timer: Timer?
+        var stalledChecks = 0
+
+        /// A cada 1 min confere se o vídeo está tocando; se ficar 5 min parado, recarrega a live.
+        func startWatchdog() {
+            timer?.invalidate()
+            timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+                guard let self, let wv = self.webView, !wv.isLoading else { return }
+                let js = "(function(){var v=document.querySelector('video');return !!(v&&!v.paused&&v.readyState>=2);})()"
+                wv.evaluateJavaScript(js) { result, _ in
+                    if (result as? Bool) == true {
+                        self.stalledChecks = 0
+                    } else {
+                        self.stalledChecks += 1
+                        if self.stalledChecks >= 5 {
+                            self.stalledChecks = 0
+                            wv.reload()
+                        }
+                    }
+                }
+            }
+            timer?.tolerance = 5
+        }
+
+        deinit { timer?.invalidate() }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> WKWebView {
+        let wv = Web.make()
+        Skeleton.attach(wv, style: .video)
+        context.coordinator.webView = wv
+        context.coordinator.startWatchdog()
+        return wv
+    }
+
+    func updateNSView(_ wv: WKWebView, context: Context) {
+        let c = context.coordinator
+        let key = "\(item.channel)|\(item.reloadToken)"
+        if c.loadedKey != key {
+            c.loadedKey = key
+            c.lastMuted = item.muted
+            c.stalledChecks = 0
+            let ucc = wv.configuration.userContentController
+            ucc.removeAllUserScripts()
+            ucc.addUserScript(Web.keepAliveScript())
+            ucc.addUserScript(WKUserScript(source: setupJS(muted: item.muted),
+                                           injectionTime: .atDocumentStart, forMainFrameOnly: false))
+            wv.load(URLRequest(url: platform.playerURL(item.channel, muted: item.muted)))
+        } else if c.lastMuted != item.muted {
+            c.lastMuted = item.muted
+            wv.evaluateJavaScript("window.__kmSetMuted && window.__kmSetMuted(\(item.muted));", completionHandler: nil)
+        }
+    }
+
+    /// Mantém o vídeo sem som (reforça a cada 1,5 s) e pede qualidade mínima na Twitch.
+    private func setupJS(muted: Bool) -> String {
+        """
+        (function () {
+          try {
+            if (location.hostname.indexOf('twitch.tv') >= 0) {
+              localStorage.setItem('video-quality', JSON.stringify({ default: '160p30' }));
+              localStorage.setItem('mature', 'true');
+              if (\(muted)) { localStorage.setItem('video-muted', JSON.stringify({ default: true })); }
+            }
+          } catch (e) {}
+          // Na página do canal da Twitch, esconde tudo e deixa só o vídeo ocupando a tela
+          if (location.hostname === 'www.twitch.tv') {
+            var css = 'html,body{background:#000!important;overflow:hidden!important}' +
+              '.km-player{position:fixed!important;top:0!important;left:0!important;right:0!important;bottom:0!important;' +
+              'width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;' +
+              'margin:0!important;transform:none!important;z-index:2147483646!important;background:#000!important}' +
+              '.km-player video{width:100%!important;height:100%!important;object-fit:contain!important}' +
+              '.km-unclip{transform:none!important;contain:none!important;filter:none!important;will-change:auto!important}' +
+              '.consent-banner,[data-a-target="consent-banner"]{display:none!important}';
+            var addCSS = function () {
+              if (document.getElementById('km-css')) { return; }
+              var st = document.createElement('style'); st.id = 'km-css'; st.textContent = css;
+              (document.head || document.documentElement).appendChild(st);
+            };
+            addCSS();
+            document.addEventListener('DOMContentLoaded', addCSS);
+            // A cada 1,5 s: acha o <video> real, prende o container dele na tela inteira
+            // e aceita o aviso "Destinado a públicos específicos"
+            setInterval(function () {
+              addCSS();
+              var gate = document.querySelector(
+                'button[data-a-target="content-classification-gate-overlay-start-watching-button"],' +
+                'button[data-a-target="player-overlay-mature-accept"]');
+              if (!gate) {
+                gate = Array.prototype.find.call(document.querySelectorAll('button'), function (b) {
+                  return /começar a assistir|start watching/i.test(b.textContent || '');
+                });
+              }
+              if (gate) { gate.click(); }
+              var v = document.querySelector('video');
+              if (!v) { return; }
+              var box = v.closest('[data-a-target="video-player"]') || v.closest('.video-player') ||
+                        v.closest('.video-player__container') || v.parentElement;
+              if (box && !box.classList.contains('km-player')) {
+                document.querySelectorAll('.km-player').forEach(function (e) { e.classList.remove('km-player'); });
+                box.classList.add('km-player');
+              }
+              // Ancestral com transform quebra o position:fixed; neutraliza
+              for (var a = box && box.parentElement; a && a !== document.body; a = a.parentElement) {
+                a.classList.add('km-unclip');
+              }
+            }, 1500);
+          }
+          window.__kmMuted = \(muted);
+          window.__kmSetMuted = function (m) {
+            window.__kmMuted = m;
+            document.querySelectorAll('video').forEach(function (v) {
+              v.muted = m;
+              if (!m) { v.volume = 1; }
+            });
+          };
+          setInterval(function () {
+            if (!window.__kmMuted) { return; }
+            document.querySelectorAll('video').forEach(function (v) { if (!v.muted) { v.muted = true; } });
+          }, 1500);
+        })();
+        """
+    }
+}
+
+// MARK: - Chat
+
+/// Mostra só a faixa de baixo do chat (pontos + botão de bônus).
+/// O chat é renderizado com altura normal e a caixa recorta tudo menos o rodapé.
+struct LiveChat: NSViewRepresentable {
+    let channel: String
+    let platform: Platform
+    let reloadToken: Int
+
+    static let stripHeight: CGFloat = 46
+    static let pageHeight: CGFloat = 420
+
+    /// Clicou na faixa (ex.: botão de pontos): o chat abre inteiro numa janela flutuante,
+    /// para o modal de resgate aparecer. Ao fechar a janela, ele volta para a faixa sem recarregar.
+    final class Coordinator: NSObject, WKScriptMessageHandler, NSWindowDelegate {
+        var loadedKey = ""
+        var webView: WKWebView!
+        weak var box: NSView?
+        var channel = ""
+        var panel: NSPanel?
+
+        func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
+            if panel == nil { expand() }
+        }
+
+        func expand() {
+            guard let wv = webView else { return }
+            let rect = NSRect(x: 0, y: 0, width: 440, height: 680)
+            let p = NSPanel(contentRect: rect, styleMask: [.titled, .closable, .resizable, .utilityWindow],
+                            backing: .buffered, defer: false)
+            p.title = "Chat de \(channel) (feche para voltar à faixa)"
+            p.isReleasedWhenClosed = false
+            p.isFloatingPanel = true
+            p.hidesOnDeactivate = false
+            p.delegate = self
+            let content = NSView(frame: rect)
+            wv.removeFromSuperview()
+            wv.frame = content.bounds
+            wv.autoresizingMask = [.width, .height]
+            content.addSubview(wv)
+            p.contentView = content
+            if let main = NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible && !($0 is NSPanel) }) {
+                let f = main.frame
+                p.setFrameOrigin(NSPoint(x: f.midX - rect.width / 2, y: f.midY - rect.height / 2))
+            } else {
+                p.center()
+            }
+            p.makeKeyAndOrderFront(nil)
+            panel = p
+        }
+
+        func collapse() {
+            guard let wv = webView, let box else { return }
+            wv.removeFromSuperview()
+            // Ancorado embaixo (em NSView o y=0 é a base): mostra só o rodapé do chat
+            wv.frame = NSRect(x: 0, y: 0, width: max(box.bounds.width, 300), height: LiveChat.pageHeight)
+            wv.autoresizingMask = [.width, .maxYMargin]
+            box.addSubview(wv)
+            panel = nil
+        }
+
+        func windowWillClose(_ notification: Notification) { collapse() }
+
+        deinit {
+            panel?.delegate = nil   // não chamar collapse() num objeto sendo destruído
+            panel?.close()
+        }
+    }
+
+    /// Evita ciclo de retenção entre o WebView e o Coordinator.
+    final class WeakHandler: NSObject, WKScriptMessageHandler {
+        weak var target: WKScriptMessageHandler?
+        init(_ t: WKScriptMessageHandler) { target = t }
+        func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
+            target?.userContentController(ucc, didReceive: message)
+        }
+    }
+
+    static let clickJS = """
+    document.addEventListener('pointerdown', function () {
+      try { window.webkit.messageHandlers.pfChat.postMessage(1); } catch (e) {}
+    }, true);
+    """
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let box = NSView()
+        box.wantsLayer = true
+        box.layer?.masksToBounds = true
+        if #available(macOS 14.0, *) { box.clipsToBounds = true }
+        let wv = Web.make()
+        Skeleton.attach(wv, style: .chat)
+        // Ancorado embaixo (em NSView o y=0 é a base): sempre mostra o rodapé do chat
+        wv.frame = NSRect(x: 0, y: 0, width: 300, height: Self.pageHeight)
+        wv.autoresizingMask = [.width, .maxYMargin]
+        box.addSubview(wv)
+        wv.configuration.userContentController.add(WeakHandler(context.coordinator), name: "pfChat")
+        context.coordinator.webView = wv
+        context.coordinator.box = box
+        return box
+    }
+
+    static func dismantleNSView(_ box: NSView, coordinator: Coordinator) {
+        coordinator.panel?.close()
+        coordinator.webView?.configuration.userContentController.removeScriptMessageHandler(forName: "pfChat")
+    }
+
+    func updateNSView(_ box: NSView, context: Context) {
+        let wv = context.coordinator.webView!
+        context.coordinator.channel = channel
+        let key = "\(channel)|\(reloadToken)"
+        guard context.coordinator.loadedKey != key else { return }
+        context.coordinator.loadedKey = key
+        let ucc = wv.configuration.userContentController
+        ucc.removeAllUserScripts()
+        ucc.addUserScript(Web.keepAliveScript())
+        ucc.addUserScript(WKUserScript(source: Self.clickJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        if platform == .twitch {
+            ucc.addUserScript(WKUserScript(source: Self.twitchAutoClaimJS,
+                                           injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        }
+        wv.load(URLRequest(url: platform.chatURL(channel)))
+    }
+
+    /// Clica sozinho no bônus de pontos do canal da Twitch quando ele aparece.
+    static let twitchAutoClaimJS = """
+    setInterval(function () {
+      var icon = document.querySelector('.claimable-bonus__icon');
+      var b = icon ? icon.closest('button')
+                   : document.querySelector('button[aria-label="Claim Bonus"], button[aria-label="Resgatar bônus"]');
+      if (b) { b.click(); }
+    }, 5000);
+    """
+}
+
+// MARK: - Alertas do mercado (Pokeidle)
+
+/// Converte "2M", "4,4M", "120k", "6.039.587", "15" em número.
+func parseAmount(_ raw: String) -> Double? {
+    var s = raw.trimmingCharacters(in: .whitespaces).uppercased().replacingOccurrences(of: " ", with: "")
+    guard !s.isEmpty else { return nil }
+    var mult = 1.0
+    if let last = s.last, let m = ["K": 1e3, "M": 1e6, "B": 1e9][String(last)] {
+        mult = m; s.removeLast()
+    }
+    if s.range(of: #"^\d{1,3}(\.\d{3})+$"#, options: .regularExpression) != nil {
+        s = s.replacingOccurrences(of: ".", with: "")      // 6.039.587
+    }
+    s = s.replacingOccurrences(of: ",", with: ".")          // 4,4
+    guard let v = Double(s) else { return nil }
+    return v * mult
+}
+
+func formatAmount(_ v: Double) -> String {
+    let f: (Double) -> String = { x in
+        x == x.rounded() ? String(Int(x)) : String(format: "%.1f", x).replacingOccurrences(of: ".", with: ",")
+    }
+    if v >= 1e9 { return f(v / 1e9) + "B" }
+    if v >= 1e6 { return f(v / 1e6) + "M" }
+    if v >= 1e3 { return f(v / 1e3) + "K" }
+    return f(v)
+}
+
+enum Currency: String, Codable {
+    case coins, gems
+    var label: String { self == .coins ? "coins" : "gemas" }
+}
+
+struct AlertRule: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var name = ""                 // vazio = qualquer Pokémon/item
+    var maxCoins: Double?
+    var maxGems: Double?
+    var belowAvgPercent: Double?  // ex.: 30 = 30% abaixo da média vista
+    var shinyOnly = false
+    var enabled = true
+
+    var summary: String {
+        var p: [String] = [name.isEmpty ? "Qualquer um" : name]
+        if shinyOnly { p.append("só shiny") }
+        if let c = maxCoins { p.append("≤ \(formatAmount(c)) coins") }
+        if let g = maxGems { p.append("≤ \(formatAmount(g)) gemas") }
+        if let b = belowAvgPercent { p.append("\(Int(b))% abaixo da média") }
+        return p.joined(separator: " · ")
+    }
+}
+
+struct MarketItem {
+    let name: String
+    let price: Double
+    let currency: Currency
+    let shiny: Bool
+    let listingID: String?
+    let source: String
+}
+
+struct AlertHit: Identifiable, Codable {
+    var id = UUID()
+    let date: Date
+    let name: String
+    let price: Double
+    let currency: Currency
+    let shiny: Bool
+    let rule: String
+    let average: Double?
+}
+
+struct SeenItem: Identifiable {
+    let id = UUID()
+    let date: Date
+    let item: MarketItem
+}
+
+extension Notification.Name {
+    static let pfOpenGame = Notification.Name("pfOpenGame")
+}
+
+/// Recebe os anúncios lidos na página do jogo, compara com as regras e notifica.
+final class MarketWatcher: NSObject, ObservableObject, WKScriptMessageHandler, UNUserNotificationCenterDelegate {
+    static let shared = MarketWatcher()
+
+    @Published var rules: [AlertRule] = [] { didSet { save(rules, "alertRules") } }
+    @Published var hits: [AlertHit] = [] { didSet { save(hits, "alertHits") } }
+    @Published var enabled = UserDefaults.standard.object(forKey: "alertsOn") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(enabled, forKey: "alertsOn") }
+    }
+    @Published var pollSeconds: Int = UserDefaults.standard.object(forKey: "pollSeconds") as? Int ?? 60 {
+        didSet { UserDefaults.standard.set(pollSeconds, forKey: "pollSeconds"); pushPoll() }
+    }
+    @Published var lastCapture: Date?
+    @Published var endpoints: [String] = []
+    @Published var seen: [SeenItem] = []
+    @Published var totalSeen = 0
+
+    weak var gameWebView: WKWebView?
+    private var alerted = Set<String>()
+    private var history: [String: [Double]] = [:]   // "nome|moeda" -> últimos preços
+    private var samplesWritten: [String: Int] = [:]
+
+    override init() {
+        super.init()
+        rules = Self.load("alertRules") ?? []
+        hits = Self.load("alertHits") ?? []
+    }
+
+    // MARK: Persistência
+    private static func load<T: Decodable>(_ key: String) -> T? {
+        guard let d = UserDefaults.standard.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(T.self, from: d)
+    }
+    private func save<T: Encodable>(_ v: T, _ key: String) {
+        if let d = try? JSONEncoder().encode(v) { UserDefaults.standard.set(d, forKey: key) }
+    }
+
+    static var dataDir: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("PokeFarm", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Guarda algumas respostas brutas do mercado (ajuda a ajustar a leitura depois).
+    private func writeSample(url: String, text: String) {
+        let n = samplesWritten[url, default: 0]
+        guard n < 3 else { return }
+        samplesWritten[url] = n + 1
+        let file = Self.dataDir.appendingPathComponent("market-samples.jsonl")
+        let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int) ?? 0
+        guard size < 3_000_000 else { return }
+        let entry: [String: Any] = ["date": ISO8601DateFormatter().string(from: Date()), "url": url, "body": text]
+        guard var line = try? JSONSerialization.data(withJSONObject: entry) else { return }
+        line.append(0x0A)
+        if let h = try? FileHandle(forWritingTo: file) {
+            h.seekToEndOfFile(); h.write(line); try? h.close()
+        } else {
+            try? line.write(to: file)
+        }
+    }
+
+    // MARK: Notificações
+    func setupNotifications() {
+        let c = UNUserNotificationCenter.current()
+        c.delegate = self
+        c.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound, .list])
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+            NotificationCenter.default.post(name: .pfOpenGame, object: nil)
+        }
+        completionHandler()
+    }
+
+    func notify(title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        NSSound(named: "Glass")?.play()
+        NSApp.requestUserAttention(.informationalRequest)
+    }
+
+    func testNotification() {
+        notify(title: "PokeFarm", body: "Teste de alerta: notificações funcionando.")
+    }
+
+    // MARK: Página -> app
+    func pushPoll() {
+        gameWebView?.evaluateJavaScript("window.__pfPoll = \(pollSeconds);", completionHandler: nil)
+    }
+
+    func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let msg = message.body as? [String: Any] else { return }
+        let url = msg["url"] as? String ?? "dom"
+        if let text = msg["sample"] as? String, url != "dom" { writeSample(url: url, text: text) }
+        if url != "dom", !endpoints.contains(url) { endpoints = Array((endpoints + [url]).suffix(10)) }
+        lastCapture = Date()
+
+        let raw = msg["items"] as? [[String: Any]] ?? []
+        let items: [MarketItem] = raw.compactMap { d in
+            guard let name = d["name"] as? String, !name.isEmpty,
+                  let price = (d["price"] as? NSNumber)?.doubleValue, price > 0 else { return nil }
+            return MarketItem(name: name, price: price,
+                              currency: (d["currency"] as? String) == "gems" ? .gems : .coins,
+                              shiny: d["shiny"] as? Bool ?? false,
+                              listingID: (d["id"] as? String) ?? (d["id"] as? NSNumber)?.stringValue,
+                              source: url == "dom" ? "tela" : "rede")
+        }
+        guard !items.isEmpty else { return }
+        process(items)
+    }
+
+    private func normalize(_ s: String) -> String {
+        s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+    }
+
+    private func average(_ item: MarketItem) -> Double? {
+        let h = history["\(normalize(item.name))|\(item.currency.rawValue)"] ?? []
+        guard h.count >= 5 else { return nil }
+        return h.reduce(0, +) / Double(h.count)
+    }
+
+    private func matches(_ r: AlertRule, _ item: MarketItem, avg: Double?) -> Bool {
+        guard r.enabled else { return false }
+        if !r.name.isEmpty, !normalize(item.name).contains(normalize(r.name)) { return false }
+        if r.shinyOnly && !item.shiny { return false }
+        let hasPriceRule = r.maxCoins != nil || r.maxGems != nil || r.belowAvgPercent != nil
+        if !hasPriceRule { return true }
+        if item.currency == .coins, let m = r.maxCoins, item.price <= m { return true }
+        if item.currency == .gems, let m = r.maxGems, item.price <= m { return true }
+        if let p = r.belowAvgPercent, let a = avg, item.price <= a * (1 - p / 100) { return true }
+        return false
+    }
+
+    private func process(_ items: [MarketItem]) {
+        totalSeen += items.count
+        let now = Date()
+        seen = Array((items.map { SeenItem(date: now, item: $0) } + seen).prefix(60))
+
+        for item in items {
+            let avg = average(item)   // média antes de incluir este preço
+            let hKey = "\(normalize(item.name))|\(item.currency.rawValue)"
+            history[hKey] = Array((history[hKey, default: []] + [item.price]).suffix(50))
+
+            guard enabled, let rule = rules.first(where: { matches($0, item, avg: avg) }) else { continue }
+            // Mesmo anúncio/preço só alerta uma vez
+            let key = "\(item.listingID ?? "-")|\(hKey)|\(item.price)"
+            guard !alerted.contains(key) else { continue }
+            if alerted.count > 20_000 { alerted.removeAll() }
+            alerted.insert(key)
+
+            hits.insert(AlertHit(date: now, name: item.name, price: item.price, currency: item.currency,
+                                 shiny: item.shiny, rule: rule.summary, average: avg), at: 0)
+            if hits.count > 300 { hits.removeLast(hits.count - 300) }
+
+            var body = "\(formatAmount(item.price)) \(item.currency.label)"
+            if let a = avg { body += " (média \(formatAmount(a)))" }
+            body += " · regra: \(rule.summary)"
+            notify(title: "\(item.shiny ? "✨ " : "")\(item.name) no mercado", body: body)
+        }
+    }
+
+    // MARK: Script injetado no jogo
+    /// Lê o mercado de 3 jeitos:
+    /// 1. respostas fetch/XHR com cara de mercado (e repete essas leituras GET a cada X s, mesmo sem a aba aberta)
+    /// 2. mensagens de WebSocket com cara de mercado
+    /// 3. os cards da tela do Community Market, quando ele estiver aberto
+    /// Só repete requisições GET (leitura). Nunca compra nem envia nada.
+    func script() -> WKUserScript {
+        let js = #"""
+        (function () {
+          if (window.__pfMarket) { return; }
+          window.__pfMarket = true;
+          window.__pfPoll = __POLL__;
+          var post = function (o) { try { window.webkit.messageHandlers.pf.postMessage(o); } catch (e) {} };
+          var WANT = /market|mercado|rmt|listing|offer|oferta|auction|leil|trade|anunc/i;
+          var replay = {};
+
+          var NAME = /^(name|nome|displayName|speciesName|pokemonName|itemName|title|species|pokemon|item)$/i;
+          var PRICE = /price|preco|preço|valor|cost|amount|min/i;
+          function pickName(o) {
+            for (var k in o) {
+              if (NAME.test(k)) {
+                var v = o[k];
+                if (typeof v === 'string' && v.length > 1) { return v; }
+                if (v && typeof v === 'object' && typeof v.name === 'string') { return v.name; }
+              }
+            }
+            return null;
+          }
+          function extract(root) {
+            var out = [], n = 0;
+            (function walk(x, depth) {
+              if (!x || depth > 8 || n > 5000) { return; }
+              n++;
+              if (Array.isArray(x)) { x.forEach(function (y) { walk(y, depth + 1); }); return; }
+              if (typeof x !== 'object') { return; }
+              var name = pickName(x);
+              if (name) {
+                var shiny = x.shiny === true || x.isShiny === true || /shiny/i.test(name);
+                var cur = String(x.currency || x.moeda || x.coin || '');
+                for (var k in x) {
+                  var v = x[k];
+                  if (typeof v === 'string' && /^\d+(\.\d+)?$/.test(v)) { v = parseFloat(v); }
+                  if (typeof v !== 'number' || !PRICE.test(k) || v <= 0) { continue; }
+                  var c = /gem|diam/i.test(k) ? 'gems' : (/coin|gold|moeda/i.test(k) ? 'coins' : (/gem|diam/i.test(cur) ? 'gems' : 'coins'));
+                  out.push({ name: name, price: v, currency: c, shiny: shiny, id: x.id || x._id || x.listingId || null });
+                }
+              }
+              for (var k2 in x) { if (x[k2] && typeof x[k2] === 'object') { walk(x[k2], depth + 1); } }
+            })(root, 0);
+            return out.slice(0, 2000);
+          }
+          function handle(url, method, text, isPoll) {
+            if (typeof text !== 'string' || text.length < 2) { return; }
+            var t = text.replace(/^\d+/, '');   // socket.io: 42["evento",{...}]
+            var json; try { json = JSON.parse(t); } catch (e) { return; }
+            var items = extract(json);
+            if (!items.length) { return; }
+            if (method === 'GET' && !isPoll) { replay[url] = Date.now(); }
+            post({ url: url, sample: text.slice(0, 30000), items: items });
+          }
+
+          var origFetch = window.fetch;
+          window.fetch = function (input, init) {
+            var url = typeof input === 'string' ? input : (input && input.url) || '';
+            var method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+            var p = origFetch.apply(this, arguments);
+            if (WANT.test(url)) {
+              p.then(function (r) { r.clone().text().then(function (t) { handle(url, method, t, false); }); }).catch(function () {});
+            }
+            return p;
+          };
+
+          var xo = XMLHttpRequest.prototype.open, xs = XMLHttpRequest.prototype.send;
+          XMLHttpRequest.prototype.open = function (m, u) { this.__pf = { m: String(m).toUpperCase(), u: String(u) }; return xo.apply(this, arguments); };
+          XMLHttpRequest.prototype.send = function () {
+            var x = this;
+            if (x.__pf && WANT.test(x.__pf.u)) {
+              x.addEventListener('load', function () { try { handle(x.__pf.u, x.__pf.m, x.responseText, false); } catch (e) {} });
+            }
+            return xs.apply(this, arguments);
+          };
+
+          var WS = window.WebSocket;
+          if (WS) {
+            var PFWS = function (u, p) {
+              var ws = p !== undefined ? new WS(u, p) : new WS(u);
+              ws.addEventListener('message', function (ev) {
+                if (typeof ev.data === 'string' && WANT.test(ev.data.slice(0, 3000))) { handle('ws:' + u, 'WS', ev.data, false); }
+              });
+              return ws;
+            };
+            PFWS.prototype = WS.prototype;
+            ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach(function (k) { PFWS[k] = WS[k]; });
+            window.WebSocket = PFWS;
+          }
+
+          // Repete as leituras GET do mercado periodicamente (só as 5 mais recentes)
+          (function tick() {
+            setTimeout(function () {
+              Object.keys(replay).sort(function (a, b) { return replay[b] - replay[a]; }).slice(0, 5).forEach(function (u) {
+                origFetch(u, { credentials: 'include' }).then(function (r) { return r.text(); })
+                  .then(function (t) { handle(u, 'GET', t, true); }).catch(function () {});
+              });
+              tick();
+            }, Math.max(15, window.__pfPoll || 60) * 1000);
+          })();
+
+          // Leitura dos cards do Community Market (quando estiver aberto na tela)
+          function num(s) {
+            s = String(s).trim().toUpperCase().replace(/\s/g, '');
+            var m = 1, last = s.slice(-1);
+            if (last === 'K') { m = 1e3; } else if (last === 'M') { m = 1e6; } else if (last === 'B') { m = 1e9; }
+            if (m > 1) { s = s.slice(0, -1); }
+            if (/^\d{1,3}(\.\d{3})+$/.test(s)) { s = s.replace(/\./g, ''); }
+            var v = parseFloat(s.replace(',', '.'));
+            return isNaN(v) ? null : v * m;
+          }
+          setInterval(function () {
+            var out = [];
+            document.querySelectorAll('button, a').forEach(function (b) {
+              if (!/ver ofertas/i.test(b.textContent || '')) { return; }
+              var card = b.parentElement, i = 0;
+              while (card && i < 6 && !/a partir de/i.test(card.innerText || '')) { card = card.parentElement; i++; }
+              if (!card) { return; }
+              var lines = (card.innerText || '').split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
+              var name = lines.find(function (l) {
+                return l.length > 2 && !/^[A-Z]+$/.test(l) && !/^P\d$/.test(l) && !/^\d+$/.test(l) &&
+                       !/ofertas|a partir|ver ofertas/i.test(l);
+              });
+              if (!name) { return; }
+              var shiny = /shiny/i.test(card.innerText) || !!card.querySelector('[class*="shiny" i], [title*="shiny" i], [alt*="shiny" i]');
+              var prices = [];
+              lines.forEach(function (l, idx) {
+                if (/a partir de/i.test(l)) {
+                  var rest = l.replace(/a partir de:?/i, '').trim() || lines[idx + 1] || '';
+                  var v = num(rest);
+                  if (v !== null) { prices.push(v); }
+                }
+              });
+              if (prices[0]) { out.push({ name: name, price: prices[0], currency: 'coins', shiny: shiny }); }
+              if (prices[1]) { out.push({ name: name, price: prices[1], currency: 'gems', shiny: shiny }); }
+            });
+            if (out.length) { post({ url: 'dom', items: out }); }
+          }, 10000);
+        })();
+        """#
+        return WKUserScript(source: js.replacingOccurrences(of: "__POLL__", with: String(pollSeconds)),
+                            injectionTime: .atDocumentStart, forMainFrameOnly: true)
+    }
+}
+
+// MARK: - Tela de alertas
+
+struct AlertsView: View {
+    @ObservedObject var w = MarketWatcher.shared
+    @State private var name = ""
+    @State private var maxCoins = ""
+    @State private var maxGems = ""
+    @State private var below = 0
+    @State private var shinyOnly = false
+
+    var body: some View {
+        HSplitView {
+            VStack(alignment: .leading, spacing: 12) {
+                status
+                GroupBox("Nova regra") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        TextField("Nome contém (ex.: Charizard, Gyarados). Vazio = qualquer", text: $name)
+                        HStack {
+                            TextField("Máx. coins (ex.: 5M)", text: $maxCoins)
+                            TextField("Máx. gemas (ex.: 3)", text: $maxGems)
+                        }
+                        HStack {
+                            Picker("Abaixo da média", selection: $below) {
+                                Text("—").tag(0)
+                                ForEach([10, 20, 30, 40, 50, 70], id: \.self) { Text("\($0)%").tag($0) }
+                            }
+                            .frame(width: 220)
+                            Toggle("Só shiny", isOn: $shinyOnly)
+                            Spacer()
+                            Button("Adicionar regra", action: addRule)
+                                .keyboardShortcut(.return, modifiers: [])
+                        }
+                        Text("Sem preço definido = avisa sempre que aparecer. Com preço = avisa se bater qualquer um dos limites.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .textFieldStyle(.roundedBorder)
+                    .padding(4)
+                }
+                GroupBox("Regras") {
+                    if w.rules.isEmpty {
+                        Text("Nenhuma regra ainda").foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 40)
+                    } else {
+                        List {
+                            ForEach($w.rules) { $r in
+                                HStack {
+                                    Toggle("", isOn: $r.enabled).labelsHidden()
+                                    Text(r.summary)
+                                    Spacer()
+                                    Button { w.rules.removeAll { $0.id == r.id } } label: { Image(systemName: "trash") }
+                                        .buttonStyle(.borderless)
+                                }
+                            }
+                        }
+                        .frame(minHeight: 120)
+                    }
+                }
+                GroupBox("Últimos anúncios lidos") {
+                    List(w.seen) { s in
+                        HStack {
+                            Text(s.item.shiny ? "✨ \(s.item.name)" : s.item.name)
+                            Spacer()
+                            Text("\(formatAmount(s.item.price)) \(s.item.currency.label)").monospacedDigit()
+                            Text(s.item.source).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(minHeight: 120)
+                }
+            }
+            .padding(12)
+            .frame(minWidth: 520)
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Alertas disparados").font(.headline)
+                    Spacer()
+                    Button("Limpar") { w.hits.removeAll() }
+                }
+                if w.hits.isEmpty {
+                    Text("Nada ainda. Quando um anúncio bater numa regra, aparece aqui e como notificação.")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(w.hits) { h in
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text(h.shiny ? "✨ \(h.name)" : h.name).fontWeight(.semibold)
+                                Spacer()
+                                Text("\(formatAmount(h.price)) \(h.currency.label)").monospacedDigit()
+                            }
+                            Text("\(h.date.formatted(date: .abbreviated, time: .shortened)) · \(h.rule)"
+                                 + (h.average.map { " · média \(formatAmount($0))" } ?? ""))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .padding(12)
+            .frame(minWidth: 320)
+        }
+    }
+
+    private var status: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Toggle("Alertas ligados", isOn: $w.enabled)
+                Picker("Verificar a cada", selection: $w.pollSeconds) {
+                    Text("30 s").tag(30); Text("1 min").tag(60); Text("2 min").tag(120); Text("5 min").tag(300)
+                }
+                .frame(width: 200)
+                Spacer()
+                Button("Testar notificação") { w.testNotification() }
+                Button("Abrir amostras") { NSWorkspace.shared.open(MarketWatcher.dataDir) }
+            }
+            Group {
+                if let d = w.lastCapture {
+                    Text("Última leitura do mercado: \(d.formatted(date: .omitted, time: .standard)) · \(w.totalSeen) anúncios lidos · \(w.endpoints.count) fonte(s) de rede")
+                } else {
+                    Text("Ainda não li o mercado. Abra o Market (Community Market) no jogo uma vez para o app aprender de onde vêm os anúncios.")
+                }
+            }
+            .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func addRule() {
+        var r = AlertRule()
+        r.name = name.trimmingCharacters(in: .whitespaces)
+        r.maxCoins = parseAmount(maxCoins)
+        r.maxGems = parseAmount(maxGems)
+        r.belowAvgPercent = below > 0 ? Double(below) : nil
+        r.shinyOnly = shinyOnly
+        w.rules.append(r)
+        name = ""; maxCoins = ""; maxGems = ""; below = 0; shinyOnly = false
+    }
+}
+
+// MARK: - Jogo (Pokeidle)
+
+enum Game {
+    static let url = URL(string: "https://pokeidle.io/app")!
+}
+
+struct GameView: NSViewRepresentable {
+    let reloadToken: Int
+
+    final class Coordinator { var loaded: Int? }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> WKWebView {
+        let wv = Web.make()
+        Skeleton.attach(wv, style: .game)
+        wv.allowsBackForwardNavigationGestures = true
+        let ucc = wv.configuration.userContentController
+        ucc.addUserScript(Web.keepAliveScript())
+        ucc.addUserScript(MarketWatcher.shared.script())
+        ucc.add(MarketWatcher.shared, name: "pf")
+        MarketWatcher.shared.gameWebView = wv
+        return wv
+    }
+
+    func updateNSView(_ wv: WKWebView, context: Context) {
+        guard context.coordinator.loaded != reloadToken else { return }
+        let first = context.coordinator.loaded == nil
+        context.coordinator.loaded = reloadToken
+        if first || wv.url == nil { wv.load(URLRequest(url: Game.url)) } else { wv.reload() }
+    }
+}
+
+// MARK: - Tile
+
+/// Tipo de arraste num bloco: mover pelo título ou redimensionar por borda/canto.
+enum TileDrag { case move, right, bottom, corner }
+
+struct Tile: View {
+    @EnvironmentObject var store: Store
+    let entry: Entry
+    /// (tipo, deslocamento, terminou)
+    var onDrag: ((TileDrag, CGSize, Bool) -> Void)? = nil
+    private var item: StreamItem { entry.item }
+    private var platform: Platform { entry.platform }
+
+    static let gripSize: CGFloat = 8
+
+    var body: some View {
+        // As alças ficam fora da área do vídeo (o WebView engoliria o mouse)
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                header
+                    .contentShape(Rectangle())
+                    .gesture(dragGesture(.move))
+                    .onHover { $0 ? NSCursor.openHand.push() : NSCursor.pop() }
+                    .help("Arraste para mover o bloco")
+                LivePlayer(item: item, platform: platform)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if store.showChat {
+                    LiveChat(channel: item.channel, platform: platform, reloadToken: item.reloadToken)
+                        .frame(height: LiveChat.stripHeight)
+                }
+                // Borda de baixo: altura
+                grip(.bottom, cursor: .resizeUpDown)
+                    .frame(height: Self.gripSize)
+            }
+            VStack(spacing: 0) {
+                // Borda direita: largura
+                grip(.right, cursor: .resizeLeftRight)
+                // Canto: largura + altura
+                ZStack {
+                    Color(nsColor: .controlBackgroundColor)
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(height: 14)
+                .contentShape(Rectangle())
+                .gesture(dragGesture(.corner))
+                .onHover { $0 ? NSCursor.crosshair.push() : NSCursor.pop() }
+                .help("Arraste para mudar largura e altura")
+            }
+            .frame(width: Self.gripSize + 4)
+        }
+        .background(Color.black)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func grip(_ kind: TileDrag, cursor: NSCursor) -> some View {
+        Rectangle()
+            .fill(Color(nsColor: .controlBackgroundColor).opacity(0.8))
+            .contentShape(Rectangle())
+            .gesture(dragGesture(kind))
+            .onHover { $0 ? cursor.push() : NSCursor.pop() }
+    }
+
+    private func dragGesture(_ kind: TileDrag) -> some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .global)
+            .onChanged { onDrag?(kind, $0.translation, false) }
+            .onEnded { onDrag?(kind, $0.translation, true) }
+    }
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            Circle().fill(platform.color).frame(width: 7, height: 7)
+            Text(item.channel)
+                .font(.system(size: 11, weight: .semibold))
+                .lineLimit(1)
+            Spacer()
+            Button {
+                store.update(item.id, platform) { $0.muted.toggle() }
+            } label: {
+                Image(systemName: item.muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+            }
+            .help(item.muted ? "Ativar som" : "Silenciar")
+            Button {
+                store.update(item.id, platform) { $0.reloadToken += 1 }
+            } label: { Image(systemName: "arrow.clockwise") }
+            .help("Recarregar")
+            Button {
+                Edge.open(URL(string: "https://\(platform.host)/\(item.channel)")!)
+            } label: { Image(systemName: "globe") }
+            .help("Abrir no Edge")
+            Button {
+                store.remove(item.id, platform)
+            } label: { Image(systemName: "xmark") }
+            .help("Fechar")
+        }
+        .font(.system(size: 11))
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 6)
+        .frame(height: 22)
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+}
+
+// MARK: - Edge
+
+enum Edge {
+    /// Abre a URL no Microsoft Edge. Sem Edge, usa o navegador padrão.
+    static func open(_ url: URL) {
+        guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.edgemac") else {
+            NSWorkspace.shared.open(url); return
+        }
+        NSWorkspace.shared.open([url], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+    }
+}
+
+// MARK: - Grade
+
+/// Grade única (Kick + Twitch) que preenche a janela, com divisórias arrastáveis:
+/// - divisória vertical entre dois blocos da mesma linha: muda a largura deles
+/// - divisória horizontal entre linhas: muda a altura das linhas
+/// Os tamanhos ficam salvos. Os players não são recriados ao redimensionar.
+struct TileGrid: View {
+    @EnvironmentObject var store: Store
+
+    private static let gap: CGFloat = 6
+
+    struct Handle: Identifiable {
+        enum Kind { case column, row, bottom }
+        let id: String
+        let kind: Kind
+        let a: String, b: String      // chaves dos pesos (bloco ou linha)
+        let groupSum: Double          // soma dos pesos da linha (ou de todas as linhas)
+        let span: CGFloat             // largura da linha (ou altura total)
+        let rect: CGRect
+    }
+
+    struct Layout {
+        var frames: [UUID: CGRect] = [:]
+        var handles: [Handle] = []
+    }
+
+    /// Escolhe o nº de colunas que deixa os vídeos maiores (proporção 16:9).
+    static func autoColumns(_ n: Int, _ size: CGSize, chrome: CGFloat) -> Int {
+        guard n > 1 else { return 1 }
+        var best = 1, bestArea: CGFloat = -1
+        for c in 1...n {
+            let r = Int(ceil(Double(n) / Double(c)))
+            let w = size.width / CGFloat(c)
+            let h = size.height / CGFloat(r) - chrome
+            guard h > 0 else { continue }
+            let vw = min(w, h * 16 / 9)
+            let area = vw * vw * 9 / 16
+            if area > bestArea { bestArea = area; best = c }
+        }
+        return best
+    }
+
+    private func layout(_ items: [Entry], _ size: CGSize) -> Layout {
+        var L = Layout()
+        let n = items.count
+        guard n > 0 else { return L }
+        let chrome: CGFloat = 22 + (store.showChat ? LiveChat.stripHeight : 0)
+        let cols = store.columns > 0 ? min(store.columns, n) : Self.autoColumns(n, size, chrome: chrome)
+        let rows = stride(from: 0, to: n, by: cols).map { Array(items[$0..<min($0 + cols, n)]) }
+
+        let rowKeys = rows.indices.map { "r\($0)" }
+        let rowW = rowKeys.map { store.rowWeights[$0] ?? 1 }
+        let rowSum = rowW.reduce(0, +)
+        let g = Self.gap
+        // Altura total usada pela grade (fração da janela). A divisória de baixo controla isso,
+        // então dá para mudar a altura mesmo com uma linha só.
+        let totalH = size.height * CGFloat(min(max(store.rowWeights[Self.totalKey] ?? 1, 0.15), 1))
+        var y: CGFloat = 0
+
+        for (ri, row) in rows.enumerated() {
+            let h = totalH * CGFloat(rowW[ri] / rowSum)
+            let keys = row.map { $0.id.uuidString }
+            let ws = keys.map { store.tileWeights[$0] ?? 1 }
+            let sum = ws.reduce(0, +)
+            var x: CGFloat = 0
+            for (ti, e) in row.enumerated() {
+                let w = size.width * CGFloat(ws[ti] / sum)
+                L.frames[e.id] = CGRect(x: x + g / 2, y: y + g / 2, width: max(w - g, 10), height: max(h - g, 10))
+                if ti < row.count - 1 {
+                    L.handles.append(Handle(id: "c\(keys[ti])-\(keys[ti + 1])", kind: .column,
+                                            a: keys[ti], b: keys[ti + 1], groupSum: sum, span: size.width,
+                                            rect: CGRect(x: x + w - g / 2, y: y + g / 2, width: g, height: max(h - g, 10))))
+                }
+                x += w
+            }
+            if ri < rows.count - 1 {
+                L.handles.append(Handle(id: "r\(ri)", kind: .row, a: rowKeys[ri], b: rowKeys[ri + 1],
+                                        groupSum: rowSum, span: totalH,
+                                        rect: CGRect(x: 0, y: y + h - g / 2, width: size.width, height: g)))
+            }
+            y += h
+        }
+        // Divisória embaixo da última linha: arrasta para cima/baixo a altura de todos os blocos
+        L.handles.append(Handle(id: "bottom", kind: .bottom, a: Self.totalKey, b: "", groupSum: 1,
+                                span: size.height,
+                                rect: CGRect(x: 0, y: min(totalH - g / 2, size.height - g), width: size.width, height: g)))
+        return L
+    }
+
+    static let totalKey = "total"
+
+    var body: some View {
+        let items = store.all
+        GeometryReader { geo in
+            let L = layout(items, geo.size)
+            ZStack(alignment: .topLeading) {
+                ForEach(items) { entry in
+                    let key = entry.id.uuidString
+                    let f = rect(key, entry.id, L, geo.size)
+                    Tile(entry: entry, onDrag: { kind, t, ended in
+                        drag(key, from: f, kind, t, ended: ended, area: geo.size)
+                    })
+                    .frame(width: f.width, height: f.height)
+                    .offset(x: f.minX, y: f.minY)
+                    .zIndex(store.frontTile == key ? 1 : 0)
+                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+        }
+        .background(Color.black.opacity(0.9))
+    }
+
+    @State private var dragOrigin: CGRect?
+    private static let minTile = CGSize(width: 180, height: 120)
+
+    /// Retângulo do bloco: o livre salvo (se o usuário já mexeu) ou a posição padrão da grade.
+    private func rect(_ key: String, _ id: UUID, _ L: Layout, _ area: CGSize) -> CGRect {
+        if let a = store.freeFrames[key], a.count == 4 {
+            return CGRect(x: a[0] * area.width, y: a[1] * area.height,
+                          width: a[2] * area.width, height: a[3] * area.height)
+        }
+        return L.frames[id] ?? .zero
+    }
+
+    /// Move/redimensiona um bloco sozinho. Salvo em fração da área, então acompanha a janela.
+    private func drag(_ key: String, from current: CGRect, _ kind: TileDrag, _ t: CGSize,
+                      ended: Bool, area: CGSize) {
+        guard area.width > 0, area.height > 0 else { return }
+        if dragOrigin == nil { dragOrigin = current; store.frontTile = key }
+        guard let o = dragOrigin else { return }
+        var r = o
+        switch kind {
+        case .move: r.origin.x += t.width; r.origin.y += t.height
+        case .right: r.size.width += t.width
+        case .bottom: r.size.height += t.height
+        case .corner: r.size.width += t.width; r.size.height += t.height
+        }
+        let snap: (CGFloat) -> CGFloat = { ($0 / 8).rounded() * 8 }   // encaixa de 8 em 8 px
+        r.size.width = min(max(snap(r.width), Self.minTile.width), area.width)
+        r.size.height = min(max(snap(r.height), Self.minTile.height), area.height)
+        r.origin.x = min(max(snap(r.minX), 0), area.width - r.width)
+        r.origin.y = min(max(snap(r.minY), 0), area.height - r.height)
+        store.freeFrames[key] = [Double(r.minX / area.width), Double(r.minY / area.height),
+                                 Double(r.width / area.width), Double(r.height / area.height)]
+        if ended { dragOrigin = nil; store.saveSizes() }
+    }
+}
+
+// MARK: - Tela principal
+
+struct ContentView: View {
+    @EnvironmentObject var store: Store
+    @State private var input = ""
+    @State private var target: Platform = .kick
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Picker("", selection: $store.tab) {
+                    ForEach(AppTab.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 240)
+                Divider().frame(height: 20)
+                switch store.tab {
+                case .lives: livesBar
+                case .game: gameBar
+                case .alerts:
+                    Text("Alertas do Community Market do Pokeidle").foregroundStyle(.secondary)
+                    Spacer()
+                }
+            }
+            .padding(8)
+            Divider()
+            // As duas abas ficam sempre carregadas; a ativa só vai para a frente.
+            // Assim o jogo e as lives continuam rodando ao trocar de aba.
+            ZStack {
+                Group {
+                    if store.all.isEmpty { empty } else { TileGrid() }
+                }
+                .background(Color(nsColor: .windowBackgroundColor))
+                .zIndex(store.tab == .lives ? 1 : 0)
+                .allowsHitTesting(store.tab == .lives)
+
+                GameView(reloadToken: store.gameReload)
+                    .zIndex(store.tab == .game ? 1 : 0)
+                    .allowsHitTesting(store.tab == .game)
+
+                if store.tab == .alerts {
+                    AlertsView()
+                        .background(Color(nsColor: .windowBackgroundColor))
+                        .zIndex(2)
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .pfOpenGame)) { _ in store.tab = .game }
+    }
+
+    private var gameBar: some View {
+        HStack(spacing: 8) {
+            Text("pokeidle.io").foregroundStyle(.secondary)
+            Spacer()
+            Button { store.gameReload += 1 } label: {
+                Label("Recarregar jogo", systemImage: "arrow.clockwise")
+            }
+            Button { Edge.open(Game.url) } label: {
+                Label("Abrir no Edge", systemImage: "globe")
+            }
+        }
+    }
+
+    private var empty: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "play.rectangle.on.rectangle")
+                .font(.system(size: 42)).foregroundStyle(.secondary)
+            Text("Adicione canais da Kick ou da Twitch acima")
+                .foregroundStyle(.secondary)
+            Text("Ex.: xqc, kick.com/canal, twitch.tv/canal")
+                .font(.caption).foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var livesBar: some View {
+        HStack(spacing: 8) {
+            Picker("", selection: $target) {
+                ForEach(Platform.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 130)
+            .help("Plataforma padrão para novos canais (links são detectados sozinhos)")
+
+            TextField("Canal ou link (vários separados por vírgula)", text: $input)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(addInput)
+            Button("Adicionar", action: addInput)
+                .keyboardShortcut(.return, modifiers: [])
+
+            Picker("Colunas", selection: $store.columns) {
+                Text("Auto").tag(0)
+                ForEach(1...8, id: \.self) { Text("\($0)").tag($0) }
+            }
+            .pickerStyle(.menu)
+            .frame(width: 130)
+            .help("Auto escolhe o nº de colunas que deixa os vídeos maiores")
+
+            Button { store.resetSizes() } label: { Image(systemName: "rectangle.split.3x3") }
+                .help("Reorganizar: volta todos os blocos para a grade (arraste o título para mover, bordas/canto para redimensionar)")
+
+            Toggle(isOn: $store.showChat) {
+                Image(systemName: "bubble.left.and.bubble.right")
+            }
+            .toggleStyle(.button)
+            .help("Mostrar/esconder os chats")
+
+            Menu("Entrar") {
+                Button("Entrar na Twitch") { Popups.shared.openLogin(.twitch) }
+                Button("Entrar na Kick") { Popups.shared.openLogin(.kick) }
+            }
+            .frame(width: 80)
+            .help("Fazer login (vale para todos os players e chats)")
+
+            Button("Silenciar todos") { store.muteAll() }
+            Button { store.reloadAll() } label: { Image(systemName: "arrow.clockwise") }
+                .help("Recarregar tudo (use depois de fazer login)")
+            Menu("Limpar") {
+                Button("Kick") { store.clear(.kick) }
+                Button("Twitch") { store.clear(.twitch) }
+                Button("Tudo") { store.clear(.kick); store.clear(.twitch) }
+            }
+            .frame(width: 80)
+        }
+    }
+
+    private func addInput() {
+        store.add(input, default: target)
+        input = ""
+    }
+}
+
+// MARK: - App
+
+/// Mantém o Mac acordado e o app em prioridade máxima, inclusive com a tela bloqueada.
+enum KeepAwake {
+    private static var activity: NSObjectProtocol?
+    private static var assertionID: IOPMAssertionID = 0
+
+    static func start() {
+        // Sem App Nap, sem suspensão do processo, sem o sistema/tela dormirem por inatividade
+        activity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled, .idleDisplaySleepDisabled,
+                      .suddenTerminationDisabled, .automaticTerminationDisabled, .latencyCritical],
+            reason: "PokeFarm: lives e jogo rodando 24h"
+        )
+        // Reforço via IOKit (o mesmo que o `caffeinate -s` faz): impede o sono do sistema na tomada
+        IOPMAssertionCreateWithName(kIOPMAssertionTypePreventSystemSleep as CFString,
+                                    IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                                    "PokeFarm rodando 24h" as CFString, &assertionID)
+    }
+}
+
+@main
+struct KickMultiApp: App {
+    @StateObject private var store = Store()
+
+    init() {
+        KeepAwake.start()
+        MarketWatcher.shared.setupNotifications()
+    }
+
+    var body: some Scene {
+        WindowGroup("PokeFarm") {
+            ContentView()
+                .environmentObject(store)
+                .frame(minWidth: 1100, minHeight: 500)
+        }
+    }
+}

@@ -1,0 +1,10 @@
+# Builds
+PokeFarm.app/
+KickMulti.app/
+PokeFarm/dist/
+PokeFarm/node_modules/
+PokeFarm/build/
+PokeFarm/assets/
+
+# macOS
+.DS_Store

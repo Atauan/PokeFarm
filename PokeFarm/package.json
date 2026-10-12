@@ -1,0 +1,63 @@
+{
+  "name": "pokefarm",
+  "productName": "PokeFarm",
+  "version": "3.0.0",
+  "description": "Lives da Kick e Twitch + Pokeidle rodando 24h, com alertas do mercado",
+  "main": "main.js",
+  "author": "PokeFarm",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "icon": "node tools/make-icon.js",
+    "start": "node tools/make-icon.js && electron .",
+    "dist:mac": "node tools/make-icon.js && electron-builder --mac",
+    "dist:win": "node tools/make-icon.js && electron-builder --win",
+    "dist": "node tools/make-icon.js && electron-builder --mac --win"
+  },
+  "devDependencies": {
+    "electron": "44.7.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.pokefarm.app",
+    "productName": "PokeFarm",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "webview-preload.js",
+      "renderer/**",
+      "assets/**",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] }
+      ],
+      "category": "public.app-category.entertainment",
+      "icon": "build/icon.png",
+      "identity": "-"
+    },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "PokeFarm-Setup-${version}.exe"
+    },
+    "portable": {
+      "artifactName": "PokeFarm-Portable-${version}.exe"
+    },
+    "dmg": {
+      "artifactName": "PokeFarm-${version}-${arch}.dmg"
+    }
+  }
+}

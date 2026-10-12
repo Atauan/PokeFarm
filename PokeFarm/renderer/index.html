@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src https:; child-src https:">
+  <title>PokeFarm</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header id="bar">
+    <div class="seg" id="tabs" role="tablist" aria-label="Abas">
+      <button data-tab="lives" role="tab">Lives</button>
+      <button data-tab="game" role="tab">Pokeidle</button>
+      <button data-tab="alerts" role="tab">Alertas</button>
+    </div>
+    <div class="sep"></div>
+
+    <div class="bar-part" id="bar-lives">
+      <div class="seg" id="target" aria-label="Plataforma padrão para novos canais">
+        <button data-target="kick">Kick</button>
+        <button data-target="twitch">Twitch</button>
+      </div>
+      <input id="channel-input" type="text" aria-label="Canal ou link"
+             placeholder="Canal ou link (vários separados por vírgula)">
+      <button id="add-btn" class="primary">Adicionar</button>
+      <label class="inline">Colunas
+        <select id="columns" aria-label="Colunas"></select>
+      </label>
+      <button id="reset-layout" class="icon" title="Reorganizar: volta todos os blocos para a grade (arraste o título para mover, bordas/canto para redimensionar)" aria-label="Reorganizar blocos">▦</button>
+      <button id="chat-toggle" class="icon toggle" title="Mostrar/esconder a faixa de pontos dos chats" aria-label="Mostrar/esconder chats">💬</button>
+      <div class="menu">
+        <button class="menu-btn">Entrar ▾</button>
+        <div class="menu-list">
+          <button data-login="twitch">Entrar na Twitch</button>
+          <button data-login="kick">Entrar na Kick</button>
+        </div>
+      </div>
+      <button id="mute-all">Silenciar todos</button>
+      <button id="reload-all" class="icon" title="Recarregar tudo (use depois de fazer login)" aria-label="Recarregar tudo">⟳</button>
+      <div class="menu">
+        <button class="menu-btn">Limpar ▾</button>
+        <div class="menu-list right">
+          <button data-clear="kick">Kick</button>
+          <button data-clear="twitch">Twitch</button>
+          <button data-clear="all">Tudo</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="bar-part" id="bar-game" hidden>
+      <span class="muted">pokeidle.io</span>
+      <span class="spacer"></span>
+      <button id="game-reload">⟳ Recarregar jogo</button>
+      <button id="game-edge">🌐 Abrir no Edge</button>
+    </div>
+
+    <div class="bar-part" id="bar-alerts" hidden>
+      <span class="muted">Alertas do Community Market do Pokeidle</span>
+    </div>
+  </header>
+
+  <main id="stage">
+    <section id="panel-lives" class="panel">
+      <div id="grid">
+        <div id="chat-backdrop" hidden>
+          <span>Clique fora do chat ou aperte Esc para voltar à faixa</span>
+        </div>
+      </div>
+      <div id="empty">
+        <div class="big">▶︎▶︎</div>
+        <div>Adicione canais da Kick ou da Twitch acima</div>
+        <div class="muted small">Ex.: xqc, kick.com/canal, twitch.tv/canal</div>
+      </div>
+    </section>
+
+    <section id="panel-game" class="panel"></section>
+
+    <section id="panel-alerts" class="panel">
+      <div class="alerts">
+        <div class="col left">
+          <div class="box">
+            <div class="row">
+              <label class="inline"><input type="checkbox" id="alerts-on"> Alertas ligados</label>
+              <label class="inline">Verificar a cada
+                <select id="poll">
+                  <option value="30">30 s</option>
+                  <option value="60">1 min</option>
+                  <option value="120">2 min</option>
+                  <option value="300">5 min</option>
+                </select>
+              </label>
+              <span class="spacer"></span>
+              <button id="test-notif">Testar notificação</button>
+              <button id="open-samples">Abrir amostras</button>
+            </div>
+            <div id="market-status" class="muted small"></div>
+          </div>
+
+          <div class="box">
+            <h3>Nova regra</h3>
+            <input id="r-name" type="text" placeholder="Nome contém (ex.: Charizard, Gyarados). Vazio = qualquer">
+            <div class="row">
+              <input id="r-coins" type="text" placeholder="Máx. coins (ex.: 5M)">
+              <input id="r-gems" type="text" placeholder="Máx. gemas (ex.: 3)">
+            </div>
+            <div class="row">
+              <label class="inline">Abaixo da média
+                <select id="r-below">
+                  <option value="0">—</option>
+                  <option value="10">10%</option><option value="20">20%</option><option value="30">30%</option>
+                  <option value="40">40%</option><option value="50">50%</option><option value="70">70%</option>
+                </select>
+              </label>
+              <label class="inline"><input type="checkbox" id="r-shiny"> Só shiny</label>
+              <span class="spacer"></span>
+              <button id="r-add" class="primary">Adicionar regra</button>
+            </div>
+            <div class="muted small">Sem preço definido = avisa sempre que aparecer. Com preço = avisa se bater qualquer um dos limites.</div>
+          </div>
+
+          <div class="box grow">
+            <h3>Regras</h3>
+            <ul id="rules" class="list"></ul>
+          </div>
+
+          <div class="box grow">
+            <h3>Últimos anúncios lidos</h3>
+            <ul id="seen" class="list"></ul>
+          </div>
+        </div>
+
+        <div class="col right">
+          <div class="row">
+            <h3>Alertas disparados</h3>
+            <span class="spacer"></span>
+            <button id="hits-clear">Limpar</button>
+          </div>
+          <ul id="hits" class="list grow"></ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Cobre a tela durante arrastes (senão as lives "roubam" o mouse) -->
+  <div id="shield" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

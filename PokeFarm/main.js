@@ -1,0 +1,181 @@
+'use strict';
+// PokeFarm — processo principal (Mac e Windows)
+const { app, BrowserWindow, ipcMain, Notification, powerSaveBlocker, shell, session } = require('electron');
+const path = require('path');
+const fs = require('fs');
+const { spawn } = require('child_process');
+
+// Todas as lives, chats, jogo e janelas de login usam a mesma sessão: logou uma vez, vale para tudo
+const PARTITION = 'persist:pokefarm';
+
+// User-agent de Chrome normal (sem "Electron"), para Twitch/Kick servirem o site padrão
+const CHROME_MAJOR = String(process.versions.chrome || '140').split('.')[0];
+const OS_UA = process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7' : 'Windows NT 10.0; Win64; x64';
+const CHROME_UA = `Mozilla/5.0 (${OS_UA}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_MAJOR}.0.0.0 Safari/537.36`;
+
+// Rodar 24h: nada é pausado/desacelerado com janela atrás, minimizada ou tela bloqueada
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,IntensiveWakeUpThrottling');
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+app.userAgentFallback = CHROME_UA;
+app.setName('PokeFarm');
+if (process.platform === 'win32') app.setAppUserModelId('com.pokefarm.app');
+
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+}
+
+let win = null;
+
+const LOGIN_URLS = {
+  twitch: 'https://www.twitch.tv/login',
+  kick: 'https://kick.com/',
+};
+
+// Só abre no Edge endereços destes sites, e só com caracteres seguros
+const SAFE_URL = /^https:\/\/([a-z0-9-]+\.)*(kick\.com|twitch\.tv|pokeidle\.io)(\/[A-Za-z0-9_\-/]*)?$/;
+
+const fromApp = (e) => !!(e.senderFrame && String(e.senderFrame.url).startsWith('file://'));
+
+function createWindow() {
+  win = new BrowserWindow({
+    width: 1440,
+    height: 880,
+    minWidth: 1000,
+    minHeight: 560,
+    title: 'PokeFarm',
+    backgroundColor: '#141416',
+    autoHideMenuBar: true,
+    icon: path.join(__dirname, 'assets', 'icon.png'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webviewTag: true,
+      backgroundThrottling: false,
+      spellcheck: false,
+    },
+  });
+  win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  // A janela principal nunca navega para fora nem abre pop-ups
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', (e) => e.preventDefault());
+  win.webContents.on('render-process-gone', () => setTimeout(() => win && !win.isDestroyed() && win.reload(), 2000));
+  win.on('closed', () => { win = null; });
+}
+
+app.on('web-contents-created', (_e, contents) => {
+  // Toda <webview> recebe o nosso preload e configurações seguras, na sessão compartilhada
+  contents.on('will-attach-webview', (event, webPreferences, params) => {
+    delete webPreferences.preloadURL;
+    webPreferences.preload = path.join(__dirname, 'webview-preload.js');
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+    webPreferences.backgroundThrottling = false;
+    webPreferences.partition = PARTITION;
+    if (!/^https:\/\//.test(params.src || '')) event.preventDefault();
+  });
+
+  // Pop-ups das páginas (login, OAuth) abrem numa janela própria, na mesma sessão
+  if (contents.getType() === 'webview') {
+    contents.setWindowOpenHandler(({ url }) => {
+      if (!/^https:\/\//.test(url)) return { action: 'deny' };
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 520,
+          height: 760,
+          title: 'Entrar',
+          autoHideMenuBar: true,
+          webPreferences: { partition: PARTITION, contextIsolation: true, sandbox: true, nodeIntegration: false },
+        },
+      };
+    });
+  }
+});
+
+// MARK: IPC da interface
+
+ipcMain.on('notify', (e, msg) => {
+  if (!fromApp(e) || !msg || !Notification.isSupported()) return;
+  const n = new Notification({ title: String(msg.title).slice(0, 120), body: String(msg.body).slice(0, 300) });
+  n.on('click', () => {
+    if (!win) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    win.webContents.send('open-tab', 'game');
+  });
+  n.show();
+});
+
+ipcMain.on('attention', (e) => {
+  if (!fromApp(e) || !win) return;
+  if (process.platform === 'darwin' && app.dock) app.dock.bounce('informational');
+  else if (!win.isFocused()) win.flashFrame(true);
+});
+
+ipcMain.on('open-edge', (e, url) => {
+  if (!fromApp(e) || typeof url !== 'string' || !SAFE_URL.test(url)) return;
+  if (process.platform === 'darwin') {
+    const p = spawn('open', ['-a', 'Microsoft Edge', url], { stdio: 'ignore' });
+    p.on('error', () => shell.openExternal(url));
+    p.on('exit', (code) => { if (code !== 0) shell.openExternal(url); });
+  } else if (process.platform === 'win32') {
+    // O Windows registra o protocolo microsoft-edge: para abrir direto no Edge
+    shell.openExternal(`microsoft-edge:${url}`).catch(() => shell.openExternal(url));
+  } else {
+    shell.openExternal(url);
+  }
+});
+
+ipcMain.on('open-login', (e, platform) => {
+  const url = LOGIN_URLS[platform];
+  if (!fromApp(e) || !url) return;
+  const w = new BrowserWindow({
+    width: 520,
+    height: 760,
+    title: platform === 'twitch' ? 'Entrar na Twitch' : 'Entrar na Kick',
+    autoHideMenuBar: true,
+    webPreferences: { partition: PARTITION, contextIsolation: true, sandbox: true, nodeIntegration: false },
+  });
+  w.loadURL(url);
+});
+
+// Amostras brutas do mercado (ajudam a ajustar a leitura depois)
+ipcMain.on('write-sample', (e, msg) => {
+  if (!fromApp(e) || !msg) return;
+  const file = path.join(app.getPath('userData'), 'market-samples.jsonl');
+  try {
+    if (fs.existsSync(file) && fs.statSync(file).size > 3_000_000) return;
+    const line = JSON.stringify({ date: new Date().toISOString(), url: String(msg.url).slice(0, 500), body: String(msg.text).slice(0, 30000) });
+    fs.appendFileSync(file, line + '\n');
+  } catch (_) { /* ignora */ }
+});
+
+ipcMain.on('open-data-dir', (e) => {
+  if (fromApp(e)) shell.openPath(app.getPath('userData'));
+});
+
+// MARK: Ciclo de vida
+
+app.on('second-instance', () => {
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.focus();
+});
+
+app.whenReady().then(() => {
+  session.fromPartition(PARTITION).setUserAgent(CHROME_UA);
+  // Mac/PC não dormem com o app aberto (inclusive com a tela bloqueada)
+  powerSaveBlocker.start('prevent-app-suspension');
+  powerSaveBlocker.start('prevent-display-sleep');
+  createWindow();
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+});
+
+app.on('window-all-closed', () => app.quit());

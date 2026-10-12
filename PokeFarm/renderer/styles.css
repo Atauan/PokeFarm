@@ -1,0 +1,134 @@
+:root {
+  --bg: #141416;
+  --panel: #1e1f23;
+  --panel2: #26272c;
+  --line: #34353b;
+  --text: #e8e8ea;
+  --muted: #9a9ba3;
+  --accent: #2f7cf6;
+  --kick: #53ee19;
+  --twitch: #9146ff;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+button, input, select { font: inherit; color: var(--text); }
+button { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+button:hover { background: #30323a; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.icon { padding: 4px 8px; }
+button.toggle.on { background: var(--accent); border-color: var(--accent); }
+input[type=text], select { background: #101114; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+input[type=text] { min-width: 0; }
+.muted { color: var(--muted); }
+.small { font-size: 11px; }
+.spacer { flex: 1; }
+.inline { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+
+#bar { height: 46px; display: flex; align-items: center; gap: 8px; padding: 0 8px;
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+.bar-part { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
+#channel-input { flex: 1; }
+.sep { width: 1px; height: 22px; background: var(--line); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; flex: none; }
+.seg button { border: 0; border-radius: 0; background: transparent; padding: 4px 12px; }
+.seg button.on { background: var(--accent); color: #fff; }
+
+.menu { position: relative; }
+.menu-list { display: none; position: absolute; top: 100%; left: 0; margin-top: 4px; z-index: 50;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px; min-width: 160px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+.menu-list.right { left: auto; right: 0; }
+.menu.open .menu-list { display: flex; flex-direction: column; gap: 2px; }
+.menu-list button { border: 0; background: transparent; text-align: left; }
+.menu-list button:hover { background: var(--panel2); }
+
+#stage { position: absolute; top: 46px; left: 0; right: 0; bottom: 0; }
+/* Todas as abas ficam carregadas; a ativa só vem para a frente (nada para de rodar) */
+.panel { position: absolute; inset: 0; z-index: 0; pointer-events: none; background: var(--bg); }
+.panel.active { z-index: 2; pointer-events: auto; }
+#panel-alerts:not(.active) { visibility: hidden; }
+#panel-game webview { width: 100%; height: 100%; display: flex; }
+
+#grid { position: absolute; inset: 0; background: #0b0b0c; }
+#empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); }
+#empty .big { font-size: 40px; }
+
+.tile { position: absolute; display: flex; flex-direction: column; background: #000; border-radius: 6px; overflow: hidden;
+  border: 1px solid #222; }
+.hdr { height: 22px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 4px 0 6px;
+  background: var(--panel); cursor: grab; user-select: none; }
+.hdr .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.hdr .name { font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hdr .sp { flex: 1; }
+.hdr button { border: 0; background: transparent; padding: 0 4px; font-size: 11px; line-height: 20px; cursor: pointer; }
+.hdr button:hover { background: var(--panel2); }
+.player { flex: 1; min-height: 0; position: relative; }
+.player webview { position: absolute; inset: 0; display: flex; }
+/* Faixa do chat: a página tem altura normal e só o rodapé (pontos/bônus) aparece */
+.chat { height: 46px; flex: none; position: relative; overflow: hidden; background: #18181b; }
+.chat webview { position: absolute; left: 0; right: 0; bottom: 0; height: 420px; display: flex; }
+#grid.nochat .chat { height: 0; }
+/* Chat aberto inteiro numa "janela" no meio da tela, para o modal de resgate caber */
+#grid .chat.expanded { position: fixed; top: 64px; left: 50%; transform: translateX(-50%);
+  width: 440px; height: min(700px, calc(100vh - 90px)); z-index: 2; border: 1px solid var(--line);
+  border-radius: 10px; box-shadow: 0 16px 48px rgba(0,0,0,.6); }
+#grid .chat.expanded webview { top: 0; height: 100%; }
+#chat-backdrop { position: absolute; inset: 0; z-index: 9000; background: rgba(0,0,0,.55);
+  display: flex; align-items: flex-end; justify-content: center; padding-bottom: 14px; color: #ccc; cursor: pointer; }
+.grip { position: absolute; z-index: 5; background: transparent; }
+.grip:hover { background: rgba(47,124,246,.45); }
+.grip-r { top: 22px; right: 0; bottom: 14px; width: 7px; cursor: ew-resize; }
+.grip-b { left: 0; right: 14px; bottom: 0; height: 7px; cursor: ns-resize; }
+.grip-c { right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize; background: rgba(255,255,255,.18);
+  border-top-left-radius: 4px; font-size: 9px; line-height: 14px; text-align: center; color: #ddd; user-select: none; }
+
+#shield { position: fixed; inset: 0; z-index: 9999; }
+
+.alerts { position: absolute; inset: 0; display: flex; gap: 12px; padding: 12px; }
+.alerts .col { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.alerts .col.left { flex: 3; }
+.alerts .col.right { flex: 2; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+.box { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.box.grow, .list.grow { flex: 1; }
+.row { display: flex; align-items: center; gap: 8px; }
+.row input[type=text] { flex: 1; }
+h3 { margin: 0; font-size: 13px; }
+.list { list-style: none; margin: 0; padding: 0; overflow: auto; min-height: 60px; }
+.list li { display: flex; align-items: center; gap: 8px; padding: 5px 4px; border-bottom: 1px solid var(--line); }
+.list li .grow { flex: 1; min-width: 0; }
+.list li.hit { flex-direction: column; align-items: stretch; gap: 2px; }
+.list .empty { color: var(--muted); border: 0; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- Skeleton (carregando) ---------- */
+webview { background: #0b0b0c; }
+.skeleton { position: absolute; inset: 0; z-index: 3; background: #0f0f12; overflow: hidden;
+  pointer-events: none; transition: opacity .25s; }
+.skeleton.gone { opacity: 0; }
+.skeleton::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.07), transparent);
+  animation: pf-shimmer 1.4s infinite; }
+.skeleton.gone::after { animation: none; }
+@keyframes pf-shimmer { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) { .skeleton::after { animation: none; } }
+.bone { position: absolute; background: #212126; border-radius: 6px; }
+
+.sk-video .screen { inset: 8px 8px 38px 8px; background: #17171b; }
+.sk-video .play { width: 52px; height: 52px; border-radius: 50%; left: calc(50% - 26px); top: calc(50% - 41px); }
+.sk-video .l1 { left: 8px; bottom: 22px; width: 45%; height: 8px; }
+.sk-video .l2 { left: 8px; bottom: 8px; width: 28%; height: 8px; }
+
+.sk-chat .avatar { left: 10px; bottom: 12px; width: 22px; height: 22px; border-radius: 50%; }
+.sk-chat .bar { left: 40px; bottom: 18px; width: 35%; height: 10px; }
+.sk-chat .btn { right: 10px; bottom: 10px; width: 54px; height: 26px; }
+
+.sk-game .top { left: 0; right: 0; top: 0; height: 48px; border-radius: 0; }
+.sk-game .side { left: 16px; width: 160px; height: 24px; }
+.sk-game .s0 { top: 72px; } .sk-game .s1 { top: 112px; } .sk-game .s2 { top: 152px; }
+.sk-game .s3 { top: 192px; } .sk-game .s4 { top: 232px; } .sk-game .s5 { top: 272px; }
+.sk-game .cards { position: absolute; left: 200px; right: 16px; top: 72px; bottom: 16px;
+  display: grid; grid-template-columns: repeat(4, 1fr); grid-auto-rows: minmax(40px, 220px); gap: 12px 10px; }
+.sk-game .card { position: static; }
