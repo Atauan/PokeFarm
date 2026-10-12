@@ -37,6 +37,37 @@ const LOGIN_URLS = {
 // Só abre no Edge endereços destes sites, e só com caracteres seguros
 const SAFE_URL = /^https:\/\/([a-z0-9-]+\.)*(kick\.com|twitch\.tv|pokeidle\.io)(\/[A-Za-z0-9_\-/]*)?$/;
 
+// Caminhos da Twitch/Kick que não são canais
+const RESERVED = new Set([
+  'directory', 'videos', 'settings', 'login', 'signup', 'p', 'downloads', 'jobs', 'subscriptions',
+  'inventory', 'wallet', 'drops', 'search', 'friends', 'messages', 'payments', 'prime', 'turbo',
+  'store', 'popout', 'embed', 'moderator', 'categories', 'browse', 'following', 'dashboard',
+  'terms-of-service', 'privacy-policy', 'community-guidelines', 'about', 'help', 'privacy', 'terms',
+]);
+
+/** Se a URL for de um canal da Kick/Twitch, devolve o link limpo (ex.: https://twitch.tv/rodil). */
+function channelURL(raw) {
+  let u;
+  try { u = new URL(raw); } catch (_) { return null; }
+  const host = u.hostname.toLowerCase();
+  const twitch = host === 'twitch.tv' || host.endsWith('.twitch.tv');
+  const kick = host === 'kick.com' || host.endsWith('.kick.com');
+  if (!(twitch || kick) || /^(player|dashboard|id)\./.test(host)) return null;
+  const parts = u.pathname.split('/').filter(Boolean);
+  if (parts.length !== 1) return null;
+  const name = parts[0].toLowerCase();
+  if (!/^[a-z0-9_-]{2,40}$/.test(name) || RESERVED.has(name)) return null;
+  return `https://${twitch ? 'twitch.tv' : 'kick.com'}/${name}`;
+}
+
+const isGame = (contents) => {
+  try { return /(^|\.)pokeidle\.io$/.test(new URL(contents.getURL()).hostname); } catch (_) { return false; }
+};
+
+function addLive(link) {
+  if (win && !win.isDestroyed()) win.webContents.send('add-live', link);
+}
+
 const fromApp = (e) => !!(e.senderFrame && String(e.senderFrame.url).startsWith('file://'));
 
 function createWindow() {
@@ -82,7 +113,28 @@ app.on('web-contents-created', (_e, contents) => {
 
   // Pop-ups das páginas (login, OAuth) abrem numa janela própria, na mesma sessão
   if (contents.getType() === 'webview') {
+    // No jogo, link/botão de live da Kick/Twitch vira bloco na aba Lives em vez de abrir
+    contents.on('will-navigate', (e, url) => {
+      if (!isGame(contents)) return;
+      const link = channelURL(url);
+      if (link) { e.preventDefault(); addLive(link); }
+    });
+    contents.on('did-create-window', (child) => {
+      if (!isGame(contents)) return;
+      // Pop-up aberto em branco e depois mandado para a live
+      child.webContents.on('will-navigate', (e, url) => {
+        const link = channelURL(url);
+        if (link) { e.preventDefault(); addLive(link); child.close(); }
+      });
+    });
     contents.setWindowOpenHandler(({ url }) => {
+      if (isGame(contents)) {
+        const link = channelURL(url);
+        if (link) { addLive(link); return { action: 'deny' }; }
+      }
+      if (url === 'about:blank' && isGame(contents)) {
+        return { action: 'allow', overrideBrowserWindowOptions: { show: false, webPreferences: { partition: PARTITION, contextIsolation: true, sandbox: true, nodeIntegration: false } } };
+      }
       if (!/^https:\/\//.test(url)) return { action: 'deny' };
       return {
         action: 'allow',

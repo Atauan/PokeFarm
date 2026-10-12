@@ -627,9 +627,31 @@ function setupBar() {
   $('#hits-clear').addEventListener('click', () => { M.hits = []; saveHits(); renderAlerts(); });
 
   window.pf.onOpenTab((tab) => setTab(tab));
+  // Link de live clicado no jogo: vira bloco na aba Lives (o jogo continua aberto)
+  window.pf.onAddLive(addFromGame);
 
   $('#chat-backdrop').addEventListener('click', collapseChat);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') collapseChat(); });
+}
+
+// ---------------- Link de live clicado no jogo ----------------
+
+let toastTimer = null;
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, 3000);
+}
+
+/** Vira bloco na aba Lives; o jogo continua aberto. */
+function addFromGame(link) {
+  const name = link.split('/').pop();
+  const plat = link.includes('twitch.tv') ? 'Twitch' : 'Kick';
+  const before = all().length;
+  addChannels(link);
+  toast(all().length > before ? `✓ ${name} (${plat}) adicionado às Lives` : `${name} já está nas Lives`);
 }
 
 // ---------------- Início ----------------

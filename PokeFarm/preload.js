@@ -11,4 +11,5 @@ contextBridge.exposeInMainWorld('pf', {
   writeSample: (url, text) => ipcRenderer.send('write-sample', { url: String(url), text: String(text).slice(0, 30000) }),
   openDataDir: () => ipcRenderer.send('open-data-dir'),
   onOpenTab: (cb) => ipcRenderer.on('open-tab', (_e, tab) => cb(String(tab))),
+  onAddLive: (cb) => ipcRenderer.on('add-live', (_e, link) => cb(String(link))),
 });

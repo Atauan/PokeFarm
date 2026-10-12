@@ -371,6 +371,22 @@ enum Skeleton {
 final class Recovery: NSObject, WKNavigationDelegate {
     static let shared = Recovery()
 
+    /// No jogo, link de canal da Kick/Twitch não navega: vira um bloco na aba Lives.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        let fromGame = webView === MarketWatcher.shared.gameWebView
+        let gamePopup = LiveLink.gamePopups.contains(webView)
+        if fromGame || gamePopup,
+           navigationAction.targetFrame?.isMainFrame ?? true,
+           let link = LiveLink.channelURL(navigationAction.request.url) {
+            LiveLink.add(link)
+            decisionHandler(.cancel)
+            if gamePopup { DispatchQueue.main.async { webView.window?.close() } }
+            return
+        }
+        decisionHandler(.allow)
+    }
+
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         webView.reload()
     }
@@ -402,6 +418,37 @@ final class Recovery: NSObject, WKNavigationDelegate {
     }
 }
 
+/// Reconhece links de canal da Kick/Twitch (ex.: botões de stream do Pokeidle).
+enum LiveLink {
+    /// Caminhos da Twitch/Kick que não são canais
+    private static let reserved: Set<String> = [
+        "directory", "videos", "settings", "login", "signup", "p", "downloads", "jobs", "subscriptions",
+        "inventory", "wallet", "drops", "search", "friends", "messages", "payments", "prime", "turbo",
+        "store", "popout", "embed", "moderator", "categories", "browse", "following", "dashboard",
+        "terms-of-service", "privacy-policy", "community-guidelines", "about", "help", "privacy", "terms",
+    ]
+
+    /// Se a URL for de um canal, devolve o link limpo (ex.: "https://twitch.tv/rodil").
+    static func channelURL(_ url: URL?) -> String? {
+        guard let url, let host = url.host?.lowercased() else { return nil }
+        let twitch = host == "twitch.tv" || host.hasSuffix(".twitch.tv")
+        let kick = host == "kick.com" || host.hasSuffix(".kick.com")
+        guard twitch || kick, !host.hasPrefix("player."), !host.hasPrefix("dashboard."),
+              !host.hasPrefix("id.") else { return nil }
+        let parts = url.path.split(separator: "/").map(String.init)
+        guard parts.count == 1, let name = Store.clean(parts[0]),
+              !reserved.contains(name) else { return nil }
+        return "https://\(twitch ? "twitch.tv" : "kick.com")/\(name)"
+    }
+
+    /// Pop-ups abertos pelo jogo (referência fraca)
+    static let gamePopups = NSHashTable<WKWebView>.weakObjects()
+
+    static func add(_ link: String) {
+        DispatchQueue.main.async { NotificationCenter.default.post(name: .pfAddLive, object: link) }
+    }
+}
+
 /// Abre pop-ups (ex.: login) em janelas próprias em vez de bloquear.
 final class Popups: NSObject, WKUIDelegate, NSWindowDelegate {
     static let shared = Popups()
@@ -409,7 +456,16 @@ final class Popups: NSObject, WKUIDelegate, NSWindowDelegate {
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        makeWindow(configuration: configuration, title: "Entrar")
+        // Botão/link de live no jogo (abre em nova aba): adiciona na aba Lives em vez de abrir janela
+        if webView === MarketWatcher.shared.gameWebView,
+           let link = LiveLink.channelURL(navigationAction.request.url) {
+            LiveLink.add(link)
+            return nil
+        }
+        let wv = makeWindow(configuration: configuration, title: "Entrar")
+        // Pop-up aberto pelo jogo em branco e depois mandado para a live: o Recovery intercepta
+        if webView === MarketWatcher.shared.gameWebView { LiveLink.gamePopups.add(wv) }
+        return wv
     }
 
     func webViewDidClose(_ webView: WKWebView) { webView.window?.close() }
@@ -815,6 +871,7 @@ struct SeenItem: Identifiable {
 
 extension Notification.Name {
     static let pfOpenGame = Notification.Name("pfOpenGame")
+    static let pfAddLive = Notification.Name("pfAddLive")
 }
 
 /// Recebe os anúncios lidos na página do jogo, compara com as regras e notifica.
@@ -1581,6 +1638,8 @@ struct ContentView: View {
     @EnvironmentObject var store: Store
     @State private var input = ""
     @State private var target: Platform = .kick
+    @State private var toast: String?
+    @State private var toastID = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1624,6 +1683,38 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .pfOpenGame)) { _ in store.tab = .game }
+        .onReceive(NotificationCenter.default.publisher(for: .pfAddLive)) { n in
+            guard let link = n.object as? String else { return }
+            addFromGame(link)
+        }
+        .overlay(alignment: .bottom) {
+            if let toast {
+                Text(toast)
+                    .font(.system(size: 13, weight: .semibold))
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(.regularMaterial, in: Capsule())
+                    .overlay(Capsule().stroke(Color.white.opacity(0.15)))
+                    .padding(.bottom, 18)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: toast)
+    }
+
+    /// Link de live clicado no jogo: vira bloco na aba Lives (o jogo continua aberto).
+    private func addFromGame(_ link: String) {
+        let name = link.split(separator: "/").last.map(String.init) ?? link
+        let platform = link.contains("twitch.tv") ? "Twitch" : "Kick"
+        let before = store.all.count
+        store.add(link, default: .twitch)
+        let msg = store.all.count > before
+            ? "✓ \(name) (\(platform)) adicionado às Lives"
+            : "\(name) já está nas Lives"
+        toastID += 1
+        let id = toastID
+        toast = msg
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { if toastID == id { toast = nil } }
     }
 
     private var gameBar: some View {
