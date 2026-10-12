@@ -29,13 +29,14 @@ const S = {
   twitch: load('pf.twitch', []),
   columns: load('pf.columns', 0),
   showChat: load('pf.showChat', true),
+  quality: load('pf.quality', 160),   // altura máxima das lives (0 = automática)
   tab: load('pf.tab', 'lives'),
   frames: load('pf.frames', {}),      // id -> [x, y, largura, altura] em fração da área
   target: 'kick',
 };
 function persist() {
   save('pf.kick', S.kick); save('pf.twitch', S.twitch); save('pf.columns', S.columns);
-  save('pf.showChat', S.showChat); save('pf.tab', S.tab); save('pf.frames', S.frames);
+  save('pf.showChat', S.showChat); save('pf.quality', S.quality); save('pf.tab', S.tab); save('pf.frames', S.frames);
 }
 
 const PLAT = {
@@ -152,7 +153,10 @@ function createTile(p, item) {
     el('button', { title: 'Fechar', 'aria-label': 'Fechar', text: '✕', onclick: () => removeItem(id) }),
   );
 
-  t.player = makeWebview(P.player(item.channel), { muted: item.muted, onReady: () => applyMute(id) });
+  t.player = makeWebview(P.player(item.channel), {
+    muted: item.muted,
+    onReady: (wv) => { applyMute(id); applyQuality(wv); },
+  });
   t.chat = makeWebview(P.chat(item.channel), { muted: true, skeleton: 'chat' });
   t.chatBox = el('div', { class: 'chat' }, t.chat, t.chat.__skeleton);
   t.chat.addEventListener('ipc-message', (e) => { if (e.channel === 'chat-click') expandChat(id); });
@@ -184,6 +188,11 @@ function applyMute(id) {
   if (!t.player.__ready) return;
   try { t.player.setAudioMuted(m); } catch (_) { /* ignora */ }
   t.player.executeJavaScript(`window.__kmSetMuted && window.__kmSetMuted(${m})`).catch(() => {});
+}
+
+function applyQuality(wv) {
+  if (!wv.__ready) return;
+  wv.executeJavaScript(`window.__kmApplyQuality && window.__kmApplyQuality(${Number(S.quality) || 0})`).catch(() => {});
 }
 
 function toggleMute(id) {
@@ -586,6 +595,18 @@ function setupBar() {
   const paintChat = () => chatBtn.classList.toggle('on', S.showChat);
   paintChat();
   chatBtn.addEventListener('click', () => { S.showChat = !S.showChat; persist(); paintChat(); layout(); });
+
+  const quality = $('#quality');
+  quality.value = String(S.quality);
+  quality.addEventListener('change', () => {
+    S.quality = Number(quality.value) || 0;
+    persist();
+    tiles.forEach((t) => {
+      // Kick no automático: recarrega para o player voltar a escolher sozinho
+      if (!S.quality && /player\.kick\.com/.test(t.player.__pfSrc)) reloadWebview(t.player);
+      else applyQuality(t.player);
+    });
+  });
 
   $('#mute-all').addEventListener('click', () => {
     all().forEach((e) => { e.i.muted = true; });

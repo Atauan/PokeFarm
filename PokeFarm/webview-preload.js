@@ -45,6 +45,44 @@ function player() {
     });
   }, 3000);
 
+  // Qualidade (altura máxima, 0 = automática). O app chama isto ao carregar e ao trocar.
+  let kickTimer = null;
+  window.__kmApplyQuality = (q) => {
+    q = Number(q) || 0;
+    if (location.hostname === 'www.twitch.tv') {
+      // A Twitch só lê a preferência ao abrir o player: se mudou, recarrega a página
+      const want = q ? JSON.stringify({ default: `${q}p30` }) : null;
+      const had = localStorage.getItem('video-quality');
+      if (want) localStorage.setItem('video-quality', want); else localStorage.removeItem('video-quality');
+      if (had !== want) location.reload();
+      return;
+    }
+    if (location.hostname !== 'player.kick.com' || !q) return;
+    // Kick: abre o menu de qualidade e escolhe a maior opção que não passe do limite (ou a menor)
+    clearInterval(kickTimer);
+    let tries = 0;
+    kickTimer = setInterval(() => {
+      if (++tries > 20) { clearInterval(kickTimer); return; }
+      const opts = Array.from(document.querySelectorAll('[role="menuitemradio"],[role="menuitem"],[role="option"],li,button'))
+        .filter((e) => { const t = (e.textContent || '').trim(); return /^\d{3,4}p/.test(t) && t.length < 20; });
+      if (!opts.length) {
+        const s = document.querySelector('button[aria-label*="setting" i],button[aria-label*="configura" i],' +
+          'button[aria-label*="quality" i],button[aria-label*="qualidade" i]');
+        if (s) s.click();
+        return;
+      }
+      let best = null; let bh = 0; let low = null; let lh = 1e9;
+      opts.forEach((e) => {
+        const h = parseInt((e.textContent || '').trim(), 10);
+        if (h <= q && h > bh) { best = e; bh = h; }
+        if (h < lh) { low = e; lh = h; }
+      });
+      (best || low).click();
+      clearInterval(kickTimer);
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    }, 4000);
+  };
+
   // Player da Kick: ele pausa sozinho (ociosidade, "aba inativa", aviso de HD).
   // Só deixa pausar se foi você que clicou; se pausar mesmo assim, aperta play de novo.
   if (location.hostname === 'player.kick.com') {
@@ -69,7 +107,6 @@ function player() {
 
   if (location.hostname !== 'www.twitch.tv') return;
   try {
-    localStorage.setItem('video-quality', JSON.stringify({ default: '160p30' }));
     localStorage.setItem('video-muted', JSON.stringify({ default: true }));
     localStorage.setItem('mature', 'true');
   } catch (_) { /* ignora */ }

@@ -41,6 +41,15 @@ enum AppTab: String, CaseIterable, Identifiable {
     var title: String { ["lives": "Lives", "game": "Pokeidle", "alerts": "Alertas"][rawValue]! }
 }
 
+/// Qualidade das lives (menor = menos CPU e internet). Vale para todas.
+enum VideoQuality: Int, CaseIterable, Identifiable {
+    case lowest = 0, low, medium, auto
+    var id: Int { rawValue }
+    var label: String { ["Mínima (160p)", "Baixa (360p)", "Média (480p)", "Automática"][rawValue] }
+    var height: Int { [160, 360, 480, 0][rawValue] }
+    var twitchGroup: String { ["160p30", "360p30", "480p30", ""][rawValue] }
+}
+
 struct StreamItem: Identifiable, Codable, Equatable {
     var id = UUID()
     var channel: String
@@ -81,6 +90,10 @@ final class Store: ObservableObject {
 
     func resetSizes() {
         tileWeights = [:]; rowWeights = [:]; freeFrames = [:]; saveSizes()
+    }
+    @Published var quality: VideoQuality =
+        VideoQuality(rawValue: UserDefaults.standard.object(forKey: "quality") as? Int ?? 0) ?? .lowest {
+        didSet { UserDefaults.standard.set(quality.rawValue, forKey: "quality") }
     }
     @Published var showChat: Bool = UserDefaults.standard.object(forKey: "showChat") as? Bool ?? true {
         didSet { UserDefaults.standard.set(showChat, forKey: "showChat") }
@@ -502,6 +515,7 @@ final class Popups: NSObject, WKUIDelegate, NSWindowDelegate {
 struct LivePlayer: NSViewRepresentable {
     let item: StreamItem
     let platform: Platform
+    let quality: VideoQuality
 
     final class Coordinator {
         var loadedKey = ""
@@ -547,7 +561,8 @@ struct LivePlayer: NSViewRepresentable {
 
     func updateNSView(_ wv: WKWebView, context: Context) {
         let c = context.coordinator
-        let key = "\(item.channel)|\(item.reloadToken)"
+        // Mudar a qualidade recarrega a live (os sites só leem a preferência ao abrir o player)
+        let key = "\(item.channel)|\(item.reloadToken)|\(quality.rawValue)"
         if c.loadedKey != key {
             c.loadedKey = key
             c.lastMuted = item.muted
@@ -555,7 +570,7 @@ struct LivePlayer: NSViewRepresentable {
             let ucc = wv.configuration.userContentController
             ucc.removeAllUserScripts()
             ucc.addUserScript(Web.keepAliveScript())
-            ucc.addUserScript(WKUserScript(source: setupJS(muted: item.muted),
+            ucc.addUserScript(WKUserScript(source: setupJS(muted: item.muted, quality: quality),
                                            injectionTime: .atDocumentStart, forMainFrameOnly: false))
             wv.load(URLRequest(url: platform.playerURL(item.channel, muted: item.muted)))
         } else if c.lastMuted != item.muted {
@@ -564,13 +579,18 @@ struct LivePlayer: NSViewRepresentable {
         }
     }
 
-    /// Mantém o vídeo sem som (reforça a cada 1,5 s) e pede qualidade mínima na Twitch.
-    private func setupJS(muted: Bool) -> String {
+    /// Mantém o vídeo sem som (reforça a cada 1,5 s) e aplica a qualidade escolhida.
+    private func setupJS(muted: Bool, quality: VideoQuality) -> String {
         """
         (function () {
+          var KM_Q = \(quality.height);   // altura máxima do vídeo (0 = automático)
           try {
             if (location.hostname.indexOf('twitch.tv') >= 0) {
-              localStorage.setItem('video-quality', JSON.stringify({ default: '160p30' }));
+              if (KM_Q > 0) {
+                localStorage.setItem('video-quality', JSON.stringify({ default: '\(quality.twitchGroup)' }));
+              } else {
+                localStorage.removeItem('video-quality');
+              }
               localStorage.setItem('mature', 'true');
               if (\(muted)) { localStorage.setItem('video-muted', JSON.stringify({ default: true })); }
             }
@@ -620,6 +640,32 @@ struct LivePlayer: NSViewRepresentable {
           }
           // Player da Kick: ele pausa sozinho (ociosidade, "aba inativa", aviso de HD).
           // Só deixa pausar se foi você que clicou; se pausar mesmo assim, aperta play de novo.
+          if (location.hostname === 'player.kick.com' && KM_Q > 0) {
+            // Kick não guarda preferência: abre o menu de qualidade do player e escolhe a opção
+            // mais alta que não passe do limite (ou a menor que existir)
+            var kmTries = 0;
+            var kmQ = setInterval(function () {
+              if (++kmTries > 20) { clearInterval(kmQ); return; }
+              var opts = Array.prototype.filter.call(
+                document.querySelectorAll('[role="menuitemradio"],[role="menuitem"],[role="option"],li,button'),
+                function (e) { var t = (e.textContent || '').trim(); return /^\\d{3,4}p/.test(t) && t.length < 20; });
+              if (!opts.length) {
+                var s = document.querySelector('button[aria-label*="setting" i],button[aria-label*="configura" i],' +
+                  'button[aria-label*="quality" i],button[aria-label*="qualidade" i]');
+                if (s) { s.click(); }
+                return;
+              }
+              var best = null, bh = 0, low = null, lh = 1e9;
+              opts.forEach(function (e) {
+                var h = parseInt((e.textContent || '').trim(), 10);
+                if (h <= KM_Q && h > bh) { best = e; bh = h; }
+                if (h < lh) { low = e; lh = h; }
+              });
+              (best || low).click();
+              clearInterval(kmQ);
+              document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            }, 4000);
+          }
           if (location.hostname === 'player.kick.com') {
             var kmUser = 0;
             var kmTouch = function () { kmUser = Date.now(); };
@@ -1392,7 +1438,7 @@ struct Tile: View {
                     .gesture(dragGesture(.move))
                     .onHover { $0 ? NSCursor.openHand.push() : NSCursor.pop() }
                     .help("Arraste para mover o bloco")
-                LivePlayer(item: item, platform: platform)
+                LivePlayer(item: item, platform: platform, quality: store.quality)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if store.showChat {
                     LiveChat(channel: item.channel, platform: platform, reloadToken: item.reloadToken)
@@ -1781,6 +1827,13 @@ struct ContentView: View {
             }
             .frame(width: 80)
             .help("Fazer login (vale para todos os players e chats)")
+
+            Picker(selection: $store.quality) {
+                ForEach(VideoQuality.allCases) { Text($0.label).tag($0) }
+            } label: { Image(systemName: "dial.low") }
+            .pickerStyle(.menu)
+            .frame(width: 150)
+            .help("Qualidade de todas as lives (menor = menos peso). Trocar recarrega as lives.")
 
             Button("Silenciar todos") { store.muteAll() }
             Button { store.reloadAll() } label: { Image(systemName: "arrow.clockwise") }
