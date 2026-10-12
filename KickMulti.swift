@@ -459,13 +459,14 @@ struct LivePlayer: NSViewRepresentable {
             timer?.invalidate()
             timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
                 guard let self, let wv = self.webView, !wv.isLoading else { return }
-                let js = "(function(){var v=document.querySelector('video');return !!(v&&!v.paused&&v.readyState>=2);})()"
+                // Tocando de verdade = não pausado E o tempo do vídeo andou desde a última checagem
+                let js = "(function(){var v=document.querySelector('video');if(!v||v.paused||v.readyState<2)return false;var t=v.currentTime,ok=window.__kmLastT!==t;window.__kmLastT=t;return ok;})()"
                 wv.evaluateJavaScript(js) { result, _ in
                     if (result as? Bool) == true {
                         self.stalledChecks = 0
                     } else {
                         self.stalledChecks += 1
-                        if self.stalledChecks >= 5 {
+                        if self.stalledChecks >= 3 {
                             self.stalledChecks = 0
                             wv.reload()
                         }
@@ -560,6 +561,26 @@ struct LivePlayer: NSViewRepresentable {
                 a.classList.add('km-unclip');
               }
             }, 1500);
+          }
+          // Player da Kick: ele pausa sozinho (ociosidade, "aba inativa", aviso de HD).
+          // Só deixa pausar se foi você que clicou; se pausar mesmo assim, aperta play de novo.
+          if (location.hostname === 'player.kick.com') {
+            var kmUser = 0;
+            var kmTouch = function () { kmUser = Date.now(); };
+            document.addEventListener('pointerdown', kmTouch, true);
+            document.addEventListener('keydown', kmTouch, true);
+            var kmPause = HTMLMediaElement.prototype.pause;
+            HTMLMediaElement.prototype.pause = function () {
+              if (Date.now() - kmUser < 1500) { return kmPause.apply(this, arguments); }
+            };
+            setInterval(function () {
+              var v = document.querySelector('video');
+              if (!v || !v.paused || v.ended || Date.now() - kmUser < 10000) { return; }
+              var btn = document.querySelector('button[aria-label*="play" i], button[aria-label*="reproduzir" i], [data-testid*="play" i]');
+              if (btn) { btn.click(); }
+              if (window.__kmMuted !== false) { v.muted = true; }
+              v.play().catch(function () { v.muted = true; v.play().catch(function () {}); });
+            }, 3000);
           }
           window.__kmMuted = \(muted);
           window.__kmSetMuted = function (m) {

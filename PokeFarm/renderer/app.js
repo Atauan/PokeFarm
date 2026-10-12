@@ -340,16 +340,18 @@ window.addEventListener('pointerup', () => {
 
 new ResizeObserver(() => layout()).observe($('#grid'));
 
-// Vigia: se o vídeo de uma live ficar 5 min parado, recarrega
+// Vigia: se o vídeo de uma live ficar ~3 min parado ou travado, recarrega
 setInterval(() => {
   for (const t of tiles.values()) {
     if (!t.player.__ready) continue;
     t.player.executeJavaScript(
-      '(function(){var v=document.querySelector("video");return !!(v&&!v.paused&&v.readyState>=2);})()',
+      // Tocando de verdade = não pausado E o tempo do vídeo andou desde a última checagem
+      '(function(){var v=document.querySelector("video");if(!v||v.paused||v.readyState<2)return false;' +
+      'var t=v.currentTime,ok=window.__kmLastT!==t;window.__kmLastT=t;return ok;})()',
     ).then((ok) => {
       if (ok) { t.stalls = 0; return; }
       t.stalls += 1;
-      if (t.stalls >= 5) { t.stalls = 0; reloadWebview(t.player); }
+      if (t.stalls >= 3) { t.stalls = 0; reloadWebview(t.player); }
     }).catch(() => {});
   }
 }, 60000);

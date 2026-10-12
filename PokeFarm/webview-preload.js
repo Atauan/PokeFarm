@@ -45,6 +45,28 @@ function player() {
     });
   }, 3000);
 
+  // Player da Kick: ele pausa sozinho (ociosidade, "aba inativa", aviso de HD).
+  // Só deixa pausar se foi você que clicou; se pausar mesmo assim, aperta play de novo.
+  if (location.hostname === 'player.kick.com') {
+    let user = 0;
+    const touch = () => { user = Date.now(); };
+    document.addEventListener('pointerdown', touch, true);
+    document.addEventListener('keydown', touch, true);
+    const origPause = HTMLMediaElement.prototype.pause;
+    HTMLMediaElement.prototype.pause = function () {
+      if (Date.now() - user < 1500) return origPause.apply(this, arguments);
+      return undefined;
+    };
+    setInterval(() => {
+      const v = document.querySelector('video');
+      if (!v || !v.paused || v.ended || Date.now() - user < 10000) return;
+      const btn = document.querySelector('button[aria-label*="play" i], button[aria-label*="reproduzir" i], [data-testid*="play" i]');
+      if (btn) btn.click();
+      if (window.__kmMuted !== false) v.muted = true;
+      v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });
+    }, 3000);
+  }
+
   if (location.hostname !== 'www.twitch.tv') return;
   try {
     localStorage.setItem('video-quality', JSON.stringify({ default: '160p30' }));
