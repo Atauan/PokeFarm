@@ -8,15 +8,17 @@
   "license": "MIT",
   "private": true,
   "scripts": {
+    "donation-qr": "node tools/make-donation-qr.js",
     "icon": "node tools/make-icon.js",
     "start": "node tools/make-icon.js && electron .",
-    "dist:mac": "node tools/make-icon.js && electron-builder --mac",
-    "dist:win": "node tools/make-icon.js && electron-builder --win",
-    "dist": "node tools/make-icon.js && electron-builder --mac --win"
+    "dist:mac": "node tools/make-icon.js && electron-builder --config electron-builder.config.cjs --mac",
+    "dist:win": "node tools/make-icon.js && electron-builder --config electron-builder.config.cjs --win",
+    "dist": "node tools/make-icon.js && electron-builder --config electron-builder.config.cjs --mac --win"
   },
   "devDependencies": {
     "electron": "44.7.0",
-    "electron-builder": "26.15.3"
+    "electron-builder": "26.15.3",
+    "qrcode": "1.5.4"
   },
   "build": {
     "appId": "com.pokefarm.app",
@@ -27,9 +29,13 @@
     },
     "files": [
       "main.js",
+      "app-version.js",
       "live-status.js",
       "release-updates.js",
       "game-channels.js",
+      "game-session.js",
+      "session-preload.js",
+      "about-preload.js",
       "twitch-economy.js",
       "kick-economy.js",
       "preload.js",
@@ -40,7 +46,13 @@
     ],
     "mac": {
       "target": [
-        { "target": "dmg", "arch": ["arm64", "x64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
       ],
       "category": "public.app-category.entertainment",
       "icon": "build/icon.png",
@@ -48,8 +60,18 @@
     },
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "icon": "build/icon.png"
     },

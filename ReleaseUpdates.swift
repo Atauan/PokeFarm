@@ -50,7 +50,8 @@ final class ReleaseUpdateChecker: ObservableObject {
     private var pending: Task<Void, Never>?
     private var timer: Timer?
 
-    init(currentVersion: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
+    init(currentVersion: String = Bundle.main.object(forInfoDictionaryKey: "PokeFarmDisplayVersion") as? String
+            ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
          defaults: UserDefaults = .standard, now: @escaping () -> Date = Date.init, loader: Loader? = nil) {
         self.currentVersion = currentVersion
         self.defaults = defaults

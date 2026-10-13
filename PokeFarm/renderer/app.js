@@ -621,6 +621,27 @@ const games = new Map();   // id da conta -> { pane, wv }
 const accountPartition = (a) => (a.main ? PARTITION : `persist:pokefarm-acc-${a.id}`);
 const currentAccount = () => S.accounts.find((a) => a.id === S.gameAccount) || S.accounts[0];
 
+// Consultado somente pelo painel do tray, sem abrir as abas ou alterar o jogo.
+window.__pfCollectSessions = async () => ({
+  selected: S.gameAccount,
+  accounts: await Promise.all(S.accounts.map(async account => {
+    const page = games.get(account.id)?.wv;
+    let data = { status: 'waiting' };
+    try {
+      if (page?.__ready && /(^|\.)pokeidle\.io$/.test(new URL(page.getURL()).hostname)) {
+        let timer;
+        try {
+          data = await Promise.race([
+            page.executeJavaScript('window.__pfReadSessionSummary ? window.__pfReadSessionSummary() : ({status: "waiting"})'),
+            new Promise(resolve => { timer = setTimeout(() => resolve({ status: 'waiting' }), 2000); }),
+          ]);
+        } finally { clearTimeout(timer); }
+      }
+    } catch (_) { /* carregamento, logout ou conta removida */ }
+    return { id: account.id, name: account.name || 'Sem nome', data };
+  })),
+});
+
 /** Cria/remove as abas do jogo para bater com a lista de contas. Todas ficam rodando. */
 function setupGame() {
   for (const [id, g] of games) {

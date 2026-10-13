@@ -1,6 +1,7 @@
 'use strict';
 
 (() => {
+  document.getElementById('support-project').addEventListener('click', () => window.pf.openAbout());
   const status = document.getElementById('update-status');
   const check = document.getElementById('check-updates');
   const open = document.getElementById('open-update');

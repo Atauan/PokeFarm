@@ -1445,6 +1445,7 @@ final class MarketWatcher: NSObject, ObservableObject, WKScriptMessageHandler, U
             if let updateTag, let url = ReleaseUpdate.url(forTag: updateTag) {
                 NSWorkspace.shared.open(url)
             } else {
+                TrayController.shared.showWindow()
                 NotificationCenter.default.post(name: .pfOpenGame, object: nil)
             }
         }
@@ -1870,6 +1871,7 @@ final class GameChannelWatcher: NSObject, WKScriptMessageHandler {
 /// Uma aba do jogo, com o login da conta dela.
 struct GameView: NSViewRepresentable {
     let account: GameAccount
+    let isSelected: Bool
     /// Só uma aba lê o mercado (evita consultar o servidor em dobro)
     let readsMarket: Bool
     let reloadToken: Int
@@ -1883,6 +1885,7 @@ struct GameView: NSViewRepresentable {
         wv.allowsBackForwardNavigationGestures = true
         let ucc = wv.configuration.userContentController
         ucc.addUserScript(Web.keepAliveScript())
+        if let script = SessionSummaryController.shared.readerScript() { ucc.addUserScript(script) }
         if let script = GameChannelWatcher.shared.script() { ucc.addUserScript(script) }
         ucc.add(GameChannelWatcher.shared, name: "pfGameChannels")
         MarketWatcher.shared.gameWebViews.add(wv)
@@ -1895,6 +1898,7 @@ struct GameView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ wv: WKWebView, coordinator: Coordinator) {
+        SessionSummaryController.shared.remove(wv)
         wv.stopLoading()
         let ucc = wv.configuration.userContentController
         ucc.removeScriptMessageHandler(forName: "pfGameChannels")
@@ -1904,6 +1908,8 @@ struct GameView: NSViewRepresentable {
     }
 
     func updateNSView(_ wv: WKWebView, context: Context) {
+        SessionSummaryController.shared.register(id: account.id.uuidString, name: account.name,
+                                                 view: wv, isSelected: isSelected)
         guard context.coordinator.loaded != reloadToken else { return }
         let first = context.coordinator.loaded == nil
         context.coordinator.loaded = reloadToken
@@ -2318,7 +2324,7 @@ struct ContentView: View {
                 ForEach(store.accounts) { a in
                     let shown = store.tab == .game && store.gameAccountID == a.id
                     let market = a.id == store.accounts.first?.id
-                    GameView(account: a, readsMarket: market, reloadToken: store.gameReloads[a.id] ?? 0)
+                    GameView(account: a, isSelected: shown, readsMarket: market, reloadToken: store.gameReloads[a.id] ?? 0)
                         .id("\(a.id.uuidString)|\(market)")
                         .zIndex(shown ? 1 : 0)
                         .allowsHitTesting(shown)
@@ -2335,6 +2341,14 @@ struct ContentView: View {
             HStack(spacing: 12) {
                 Text("PokeFarm \(updates.currentVersion)").foregroundStyle(.secondary)
                 Spacer()
+                Button { TrayController.shared.showAbout() } label: {
+                    Label {
+                        Text("Apoie o PokeFarm")
+                    } icon: {
+                        Image(systemName: "heart.fill").foregroundStyle(.pink)
+                    }
+                }
+                .help("Ajude os desenvolvedores com um café ou uma Coca-Cola")
                 Button("Verificar atualizações") { Task { await updates.checkManually() } }
                     .disabled(updates.status == "checking")
             }
@@ -2581,6 +2595,7 @@ enum KeepAwake {
 @main
 @MainActor
 struct KickMultiApp: App {
+    @NSApplicationDelegateAdaptor(PokeFarmAppDelegate.self) private var appDelegate
     @StateObject private var store = Store()
     @StateObject private var updates = ReleaseUpdateChecker()
 
@@ -2592,6 +2607,7 @@ struct KickMultiApp: App {
     var body: some Scene {
         WindowGroup("PokeFarm") {
             ContentView()
+                .background(TrayWindowRegistration())
                 .environmentObject(store)
                 .environmentObject(updates)
                 .task {

@@ -1,11 +1,14 @@
 'use strict';
 // PokeFarm — processo principal (Mac e Windows)
-const { app, BrowserWindow, ipcMain, Notification, powerSaveBlocker, shell, session } = require('electron');
+const { app, BrowserWindow, ipcMain, Notification, powerSaveBlocker, shell, session, Tray, Menu, nativeImage, screen, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { createLiveStatusService } = require('./live-status');
 const { createReleaseChecker } = require('./release-updates');
+const { resolveVersion } = require('./app-version');
+const APP_VERSION = resolveVersion({ fallbackVersion: app.getVersion(), isPackaged: app.isPackaged });
+const donations = require('./assets/donations/developers.json');
 
 // Todas as lives, chats, jogo e janelas de login usam a mesma sessão: logou uma vez, vale para tudo
 const PARTITION = 'persist:pokefarm';
@@ -30,15 +33,132 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 let win = null;
+let aboutWindow = null;
+let summaryWindow = null;
+let trayClickTimer = null;
+let ignoreTrayClickUntil = 0;
+let tray = null;
+let quitting = false;
 let updateChecker = null;
 let updateTimer = null;
+
+function showWindow() {
+  if (quitting) return;
+  clearTimeout(trayClickTimer);
+  summaryWindow?.hide();
+  if (!win || win.isDestroyed()) createWindow();
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+function createTray() {
+  const size = process.platform === 'darwin' ? 18 : 32;
+  const icon = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png'))
+    .resize({ width: size, height: size });
+  tray = new Tray(icon);
+  tray.setToolTip('PokeFarm');
+  const menu = Menu.buildFromTemplate([
+    { label: 'Sobre', click: showAbout },
+    { type: 'separator' },
+    { label: 'Sair', click: () => app.quit() },
+  ]);
+  tray.on('click', () => {
+    if (Date.now() < ignoreTrayClickUntil) return;
+    clearTimeout(trayClickTimer);
+    trayClickTimer = setTimeout(() => {
+      if (win && (!win.isVisible() || win.isMinimized())) showSessionSummary();
+      else showWindow();
+    }, 300);
+  });
+  tray.on('double-click', () => {
+    ignoreTrayClickUntil = Date.now() + 500;
+    showWindow();
+  });
+  // Menu explícito: setContextMenu também capturaria o clique esquerdo no macOS.
+  tray.on('right-click', () => {
+    clearTimeout(trayClickTimer);
+    summaryWindow?.hide();
+    tray.popUpContextMenu(menu);
+  });
+}
+
+function showSessionSummary() {
+  if (quitting) return;
+  const bounds = tray.getBounds();
+  const area = screen.getDisplayMatching(bounds).workArea;
+  const width = Math.min(420, area.width - 16);
+  const height = Math.min(680, area.height - 16);
+  const x = Math.max(area.x + 8, Math.min(bounds.x + bounds.width - width, area.x + area.width - width - 8));
+  const below = bounds.y + bounds.height + 8;
+  const y = Math.max(area.y + 8, Math.min(below + height <= area.y + area.height ? below : bounds.y - height - 8, area.y + area.height - height - 8));
+  if (!summaryWindow || summaryWindow.isDestroyed()) {
+    const panel = new BrowserWindow({
+      width, height, x, y, frame: false, show: false, resizable: false,
+      skipTaskbar: true, alwaysOnTop: true, backgroundColor: '#141416',
+      webPreferences: { preload: path.join(__dirname, 'session-preload.js'),
+        contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    summaryWindow = panel;
+    panel.setMenu(null);
+    panel.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    panel.webContents.on('will-navigate', event => event.preventDefault());
+    panel.on('blur', () => panel.hide());
+    panel.on('closed', () => { summaryWindow = null; });
+    panel.once('ready-to-show', () => {
+      if (!quitting && win && (!win.isVisible() || win.isMinimized())) { panel.show(); panel.focus(); }
+    });
+    panel.loadFile(path.join(__dirname, 'renderer', 'session.html'));
+  } else {
+    summaryWindow.setBounds({ x, y, width, height });
+    summaryWindow.show(); summaryWindow.focus();
+  }
+}
+
+function showAbout() {
+  if (quitting) return;
+  if (aboutWindow && !aboutWindow.isDestroyed()) {
+    aboutWindow.show();
+    aboutWindow.focus();
+    return;
+  }
+  const window = new BrowserWindow({
+    title: 'Sobre o PokeFarm', width: 440, height: 640, useContentSize: true,
+    resizable: false, minimizable: false, maximizable: false, show: false,
+    backgroundColor: '#141416', autoHideMenuBar: true,
+    icon: path.join(__dirname, 'assets', 'icon.png'),
+    webPreferences: { preload: path.join(__dirname, 'about-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  aboutWindow = window;
+  window.setMenu(null);
+  const aboutLinks = new Set([donations.repository, ...donations.developers.flatMap(profile => [profile.github, profile.linkedin])]);
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (aboutLinks.has(url)) void shell.openExternal(url).catch(() => {});
+    return { action: 'deny' };
+  });
+  window.webContents.on('will-navigate', event => event.preventDefault());
+  window.once('ready-to-show', () => { window.show(); window.focus(); });
+  window.on('closed', () => { aboutWindow = null; });
+  window.loadFile(path.join(__dirname, 'renderer', 'about.html'), {
+    query: { version: APP_VERSION },
+  });
+}
+
+ipcMain.handle('about-data', event => event.sender === aboutWindow?.webContents ? donations : null);
+ipcMain.handle('about-copy-pix', (event, id) => {
+  if (event.sender !== aboutWindow?.webContents) return false;
+  const profile = donations.developers.find(profile => profile.id === id);
+  if (!profile) return false;
+  clipboard.writeText(profile.pix);
+  return true;
+});
 
 function startUpdateChecks() {
   const settingsFile = path.join(app.getPath('userData'), 'update-notifications.json');
   let notifiedVersions = [];
   try { notifiedVersions = JSON.parse(fs.readFileSync(settingsFile, 'utf8')); } catch (_) { /* primeira abertura */ }
   updateChecker = createReleaseChecker({
-    currentVersion: app.getVersion(), notifiedVersions,
+    currentVersion: APP_VERSION, notifiedVersions,
     persistNotified: versions => fs.writeFileSync(settingsFile, JSON.stringify(versions)),
     onChange: state => {
       if (win && !win.isDestroyed()) win.webContents.send('update-state', state);
@@ -105,6 +225,7 @@ function setupSession(part) {
   const ses = session.fromPartition(part);
   ses.setUserAgent(CHROME_UA);
   ses.registerPreloadScript({ id: 'pf-game-channels', type: 'frame', filePath: path.join(__dirname, 'game-channels.js') });
+  ses.registerPreloadScript({ id: 'pf-game-session', type: 'frame', filePath: path.join(__dirname, 'game-session.js') });
   ses.registerPreloadScript({ id: 'pf-twitch-economy', type: 'frame', filePath: path.join(__dirname, 'twitch-economy.js') });
   ses.registerPreloadScript({ id: 'pf-kick-economy', type: 'frame', filePath: path.join(__dirname, 'kick-economy.js') });
 }
@@ -137,6 +258,14 @@ function createWindow() {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.on('render-process-gone', () => setTimeout(() => win && !win.isDestroyed() && win.reload(), 2000));
+  win.on('close', event => {
+    if (quitting || !tray || tray.isDestroyed()) return;
+    event.preventDefault();
+    // Oculta sem destruir o renderer/webviews ou alterar o estado de áudio.
+    win.hide();
+  });
+  // O Windows não emite before-quit ao encerrar a sessão do usuário.
+  win.on('session-end', () => { quitting = true; });
   win.on('closed', () => { win = null; });
 }
 
@@ -199,6 +328,20 @@ app.on('web-contents-created', (_e, contents) => {
 // MARK: IPC da interface
 
 const fromMainWindow = e => !!win && e.sender === win.webContents && e.senderFrame === win.webContents.mainFrame;
+const fromSummaryWindow = e => !!summaryWindow && e.sender === summaryWindow.webContents && e.senderFrame === summaryWindow.webContents.mainFrame;
+ipcMain.handle('session-summary', async e => {
+  if (!fromSummaryWindow(e) || !win || win.isDestroyed()) return null;
+  let timer;
+  try {
+    return await Promise.race([
+      win.webContents.executeJavaScript('window.__pfCollectSessions ? window.__pfCollectSessions() : ({accounts: []})'),
+      new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error('Game summary timeout')), 4000); }),
+    ]);
+  } finally { clearTimeout(timer); }
+});
+ipcMain.on('session-open', e => { if (fromSummaryWindow(e)) showWindow(); });
+ipcMain.on('session-close', e => { if (fromSummaryWindow(e)) summaryWindow.hide(); });
+ipcMain.on('open-about', e => { if (fromMainWindow(e)) showAbout(); });
 ipcMain.handle('update-state', e => fromMainWindow(e) ? updateChecker?.getState() : null);
 ipcMain.handle('check-updates', e => fromMainWindow(e) ? updateChecker?.check() : null);
 ipcMain.handle('open-update', async e => {
@@ -219,10 +362,8 @@ ipcMain.on('notify', (e, msg) => {
   if (!fromApp(e) || !msg || !Notification.isSupported()) return;
   const n = new Notification({ title: String(msg.title).slice(0, 120), body: String(msg.body).slice(0, 300) });
   n.on('click', () => {
-    if (!win) return;
-    if (win.isMinimized()) win.restore();
-    win.show();
-    win.focus();
+    if (quitting) return;
+    showWindow();
     win.webContents.send('open-tab', 'game');
   });
   n.show();
@@ -312,21 +453,26 @@ ipcMain.on('open-data-dir', (e) => {
 
 // MARK: Ciclo de vida
 
-app.on('second-instance', () => {
-  if (!win) return;
-  if (win.isMinimized()) win.restore();
-  win.focus();
-});
+app.on('second-instance', showWindow);
 
 app.whenReady().then(() => {
   setupSession(PARTITION);
   // Mac/PC não dormem com o app aberto (inclusive com a tela bloqueada)
   powerSaveBlocker.start('prevent-app-suspension');
   powerSaveBlocker.start('prevent-display-sleep');
+  createTray();
   createWindow();
   startUpdateChecks();
-  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  app.on('activate', () => { if (!summaryWindow?.isVisible()) showWindow(); });
 });
 
 app.on('window-all-closed', () => app.quit());
-app.on('before-quit', () => { if (updateTimer) clearInterval(updateTimer); });
+app.on('before-quit', () => {
+  quitting = true;
+  clearTimeout(trayClickTimer);
+  if (updateTimer) clearInterval(updateTimer);
+});
+app.on('will-quit', () => {
+  if (tray && !tray.isDestroyed()) tray.destroy();
+  tray = null;
+});

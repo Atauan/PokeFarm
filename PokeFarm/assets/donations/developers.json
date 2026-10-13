@@ -1,0 +1,27 @@
+{
+  "repository": "https://github.com/RaullPereira/PokeFarm",
+  "developers": [
+    {
+      "id": "raul",
+      "name": "Raul Pereira",
+      "emoji": "☕",
+      "title": "Um café para o Raul",
+      "message": "Curtiu o PokeFarm? Um cafezinho ajuda a manter as ideias acordadas.",
+      "pix": "00020101021126580014BR.GOV.BCB.PIX013629293abb-bb27-4f19-8b25-600bb4c8ea8c5204000053039865802BR5922RAUL PEREIRA DE CASTRO6009SAO PAULO62080504daqr6304AFDF",
+      "qr": "raul-pix.png",
+      "github": "https://github.com/RaullPereira",
+      "linkedin": "https://www.linkedin.com/in/raul-pereira-a45b781a0/"
+    },
+    {
+      "id": "joao",
+      "name": "João Pedro Cordeiro Guimarães",
+      "emoji": "🥤",
+      "title": "Uma Coca-Cola para o João Pedro",
+      "message": "Curtiu o PokeFarm? Uma Coca-Cola geladinha é um jeito de dar aquela força.",
+      "pix": "00020101021126580014BR.GOV.BCB.PIX013637874436-a023-4b2d-bda9-1ecb8e85122f5204000053039865802BR5925Joao Pedro Cordeiro Guima6009SAO PAULO62080504daqr6304DCCA",
+      "qr": "joao-pix.png",
+      "github": "https://github.com/jpedrocguimaraes",
+      "linkedin": "https://www.linkedin.com/in/jpedrocguimaraes"
+    }
+  ]
+}

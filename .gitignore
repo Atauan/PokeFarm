@@ -4,7 +4,8 @@ KickMulti.app/
 PokeFarm/dist/
 PokeFarm/node_modules/
 PokeFarm/build/
-PokeFarm/assets/
+PokeFarm/assets/*
+!PokeFarm/assets/donations/
 
 # macOS
 .DS_Store

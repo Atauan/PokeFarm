@@ -50,6 +50,9 @@ input[type=text] { min-width: 0; }
   display: flex; align-items: center; gap: 12px; padding: 0 10px;
   background: var(--panel); border-top: 1px solid var(--line); }
 #app-version { flex-shrink: 0; }
+#support-project { color: #ffd0e0; background: #332334; border-color: #664152; }
+#support-project:hover { background: #483044; border-color: #b26b8a; }
+#support-project span { color: #f58fb8; margin-right: 3px; }
 #update-dialog { position: fixed; inset: 0; margin: auto; width: min(460px, calc(100vw - 40px));
   max-height: calc(100vh - 40px); padding: 28px; color: var(--text); background: var(--panel);
   border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 80px rgba(0,0,0,.6); }

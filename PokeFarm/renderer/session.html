@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'">
+  <title>Resumo da sessão</title>
+  <link rel="stylesheet" href="session.css">
+  <script src="session.js" defer></script>
+</head>
+<body>
+  <header><div><small>POKEFARM</small><h1>Resumo da sessão</h1></div><button id="summary-close" aria-label="Fechar resumo">×</button></header>
+  <label class="account">Conta <select id="account-select" aria-label="Conta do Pokeidle"></select></label>
+  <p id="summary-status" role="status">Lendo dados do jogo…</p>
+  <main id="summary-data" hidden>
+    <div class="session-time"><strong id="nickname"></strong><span id="duration"></span></div>
+    <section class="stats" aria-label="Resultados da sessão">
+      <div><span>Capturados</span><strong id="captured">—</strong></div>
+      <div class="shiny"><span>Shinies capturados</span><strong id="shinies">—</strong></div>
+      <div><span>Ouro obtido</span><strong id="gold">—</strong></div>
+      <div><span>Custo estimado</span><strong id="cost">—</strong></div>
+    </section>
+    <p id="details" class="muted"></p><p id="cost-note" class="muted"></p>
+    <section aria-labelledby="boost-totals-title">
+      <h2 id="boost-totals-title">Totais por tipo</h2>
+      <dl id="boost-totals" class="boost-totals"></dl>
+      <p id="boost-totals-note" class="muted"></p>
+    </section>
+    <section><h2>Boosts e bônus ativos</h2><div id="boosts" class="chips"></div></section>
+    <section><h2>Drops raros</h2><div id="drops" class="chips"></div></section>
+    <section aria-labelledby="captures-title"><h2 id="captures-title">Capturas por nota</h2><p id="captures-note" class="muted"></p><ul id="captures"></ul></section>
+  </main>
+  <footer><p>Usa os resets de Sessão e Capturas do jogo.</p><button id="summary-open">Abrir PokeFarm <span>↗</span></button></footer>
+</body>
+</html>

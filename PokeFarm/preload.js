@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('pf', {
   platform: process.platform,
+  openAbout: () => ipcRenderer.send('open-about'),
   updateState: () => ipcRenderer.invoke('update-state'),
   checkUpdates: () => ipcRenderer.invoke('check-updates'),
   openUpdate: () => ipcRenderer.invoke('open-update'),

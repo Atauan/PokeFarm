@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'">
+  <title>Sobre o PokeFarm</title>
+  <link rel="stylesheet" href="about.css">
+  <script src="about.js" defer></script>
+</head>
+<body>
+  <main>
+    <section id="about-screen">
+    <img class="app-icon" src="../assets/icon.png" alt="" width="88" height="88">
+    <h1>PokeFarm</h1>
+    <p class="version" id="version"></p>
+    <p class="description">Lives, Pokeidle e sua comunidade.<br>Tudo no mesmo lugar.</p>
+    <section class="credits" aria-labelledby="credits-title">
+      <h2 id="credits-title">Desenvolvido por</h2>
+      <div id="developers"></div>
+      <p class="credits-hint">Clique em um nome para apoiar o desenvolvedor.</p>
+    </section>
+    <a id="repository" class="repository" target="_blank" rel="noopener">Repositório no GitHub <span aria-hidden="true">↗</span></a>
+    <p class="thanks"><span aria-hidden="true">♥</span> Feito com carinho, de jogador para jogador.</p>
+    <p id="about-error" role="status"></p>
+    </section>
+    <section id="donation-screen" hidden aria-labelledby="donation-title">
+      <button type="button" id="donation-back" class="back">← Voltar ao Sobre</button>
+      <div id="donation-emoji" class="donation-emoji" aria-hidden="true"></div>
+      <h2 id="donation-title"></h2>
+      <p id="donation-name" class="donation-name"></p>
+      <p id="donation-message" class="donation-message"></p>
+      <img id="donation-qr" class="donation-qr" width="212" height="212" alt="">
+      <p class="qr-hint">Escaneie com o app do seu banco e escolha o valor.</p>
+      <button type="button" id="copy-pix" class="primary">Copiar código Pix</button>
+      <p id="copy-status" role="status" aria-live="polite"></p>
+      <nav class="social-links" aria-label="Perfis do desenvolvedor">
+        <a id="donation-github" target="_blank" rel="noopener">GitHub ↗</a>
+        <a id="donation-linkedin" target="_blank" rel="noopener">LinkedIn ↗</a>
+      </nav>
+    </section>
+    <button type="button" id="close" autofocus>Fechar</button>
+  </main>
+</body>
+</html>

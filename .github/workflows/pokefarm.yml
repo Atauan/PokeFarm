@@ -69,6 +69,7 @@ jobs:
       - run: npm run ${{ matrix.script }} -- --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
       - name: Build and package the universal Swift app
         if: runner.os == 'macOS'
         working-directory: .

@@ -25,6 +25,8 @@ Várias lives da **Kick** e da **Twitch** numa tela só, sem som, farmando ponto
 - **Várias contas do Pokeidle:** o botão **+** cria uma aba nova do jogo, com login separado. Dê um nome para cada conta na barra da aba; todas ficam rodando ao mesmo tempo, mesmo as que não estão na tela.
 - **Alertas do mercado do Pokeidle:** regras por nome, preço máximo (coins/gemas), % abaixo da média e "só shiny", com notificação do sistema. Só avisa, nunca compra.
 - **Rodar 24h:** o computador não dorme com o app aberto, inclusive com a tela bloqueada; live parada é recarregada; página travada é recarregada; sem internet, tenta de novo a cada 30 s.
+- **Minimizar ao fechar (Swift e Electron):** fechar a janela mantém o PokeFarm no tray do Windows ou na barra de menus do macOS. Lives, jogo, automações, alertas e sons continuam ativos, respeitando as opções de som de cada página. Um clique esquerdo abre o resumo da sessão; dois cliques restauram a janela. Clique direito oferece **Sobre** e **Sair**.
+- **Resumo no tray:** seletor de conta, capturas, shinies vistos/capturados, ouro, XP, abates, custos estimados, boosts/bônus ativos e drops raros. Usa os dados de **Sessão** e **Capturas** do próprio Pokeidle e acompanha os resets independentes feitos no jogo.
 - **Skeleton de carregamento** no lugar da tela branca.
 - **Aviso de atualização (Swift e Electron):** consulta releases estáveis do GitHub ao abrir e a cada hora, mostra um modal central e notifica uma vez por versão. **Ver release / baixar** abre a página da release no navegador; **Agora não** ou Esc fecha o aviso. O usuário escolhe e instala o download.
 - **Sessões salvas:** o login da Twitch ou Kick vale para todos os blocos e janelas daquele site. O login do Pokeidle é feito no próprio jogo. Os canais e o jogo também podem ser abertos no Microsoft Edge, que usa sua própria sessão.
@@ -85,6 +87,18 @@ npm start                       # abre direto, sem gerar instalador
 
 Se já estiver na raiz do repositório, basta entrar na subpasta `PokeFarm` antes dos comandos npm.
 
+### Versão nas execuções locais
+
+`npm start`, os builds Electron (`npm run dist:win` / `dist:mac`) e `./build.sh` usam a tag estável do Git mais próxima no histórico do código atual. A consulta usa as tags locais, sem acessar a rede ou reescrever o `package.json` e o `Info.plist` do repositório.
+
+- Na tag `v3.0.2`, com o checkout limpo: **3.0.2**.
+- Com arquivos modificados ou novos ainda não commitados: **3.0.2+dirty**.
+- Dois commits depois da tag: **3.0.2+2.gabc1234** (acrescenta `.dirty` se houver alterações locais).
+
+**Sobre**, rodapé e verificador de atualizações usam a mesma versão. O verificador compara a parte numérica, ignorando os metadados depois de `+`. Tags futuras ou de outro histórico não alteram a identificação de um checkout antigo. Sem Git, sem tags estáveis alcançáveis ou em uma cópia ZIP, o app usa a versão-base dos arquivos. Se as tags estiverem faltando no clone, execute `git fetch --tags` e reinicie/recompile o app.
+
+Os instaladores preservam a versão determinada no build, mesmo ao serem executados fora do repositório. Nas releases oficiais, `RELEASE_VERSION`, definida pelo workflow, tem prioridade sobre o Git local e mantém o número publicado sem o marcador `dirty`.
+
 ### Gerar instaladores
 
 Dentro da subpasta `PokeFarm`, execute o comando do sistema correspondente. Os arquivos saem em `PokeFarm/dist/`, relativo à raiz do repositório:
@@ -93,6 +107,8 @@ Dentro da subpasta `PokeFarm`, execute o comando do sistema correspondente. Os a
 npm run dist:mac                # .dmg para Apple Silicon e Intel (rodar no Mac)
 npm run dist:win                # instalador .exe e versão portátil .exe (rodar no Windows)
 ```
+
+### Builds pelo GitHub
 
 O workflow **PokeFarm build** roda a cada push na `main`, usa runners Windows e macOS e publica uma release com patch incrementado automaticamente. Ele gera os instaladores Electron para os dois sistemas e o app nativo Swift universal para Mac.
 
@@ -106,6 +122,16 @@ Os instaladores Electron e o pacote Swift ficam anexados à release e também di
 4. **Resgatar pontos:** clique na faixa do chat do bloco; o chat abre inteiro. Feche a janela (Swift) ou clique fora / Esc (Electron) para voltar à faixa.
 5. **Alertas:** abra o Community Market no jogo uma vez, para o app aprender de onde vêm os anúncios. Depois cadastre as regras na aba **Alertas** e clique em **Testar notificação** para conferir se o sistema deixa o app notificar.
 6. **Atualizações:** quando surgir o modal central, escolha **Ver release / baixar** ou **Agora não**. Esc também fecha. Para consultar novamente, use **Verificar atualizações** no rodapé. O aviso não instala arquivos nem reinicia o app.
+7. **Rodar em segundo plano:** feche a janela para enviar o app ao tray (Windows) ou à barra de menus (macOS). Com a janela oculta ou minimizada, um clique esquerdo abre o resumo da sessão e dois cliques restauram o app. O resumo permite trocar de conta e tem o botão **Abrir PokeFarm**. **Esc**, **×** ou clicar fora fecham o resumo. Para encerrar o app, clique com o botão direito e escolha **Sair**; no Mac, **Cmd+Q** também encerra. Janelas de login e chats separados continuam fechando normalmente.
+8. **Sobre:** no menu do botão direito do tray, escolha **Sobre** para ver a versão instalada, os créditos e o link do repositório. Clique no nome de um desenvolvedor para abrir sua tela de apoio: um café para Raul Pereira ou uma Coca-Cola para João Pedro Cordeiro Guimarães, com QR Code Pix, botão **Copiar código Pix** e links de GitHub e LinkedIn. **Voltar ao Sobre** ou **Esc** retorna aos créditos; na tela inicial, **Esc** fecha a janela. **Fechar** e **✕** fecham a janela mantendo o app em execução.
+
+Os dados das doações ficam em `PokeFarm/assets/donations/developers.json`, compartilhados entre Electron e Swift. Os QR Codes são imagens locais incluídas no app e não dependem de serviços externos. Após alterar um Pix, execute `npm run donation-qr` na pasta `PokeFarm` para regenerar as imagens.
+
+### Resumo da sessão no tray
+
+O painel consulta as contas abertas a cada 2 segundos enquanto estiver visível. Usa a prancheta **Sessão** e o histórico **Capturas** que o próprio jogo salva para cada nick, incluindo dados que ele preserva entre reinícios. O PokeFarm não inicia uma contagem paralela: os botões de reset do jogo determinam o período de cada seção. A lista mostra as 12 maiores notas entre as últimas 100 capturas guardadas pelo jogo; empates favorecem a captura mais recente. Cada Pokémon mostra nível, nota, potência, qualidade e IV total, usando os atributos salvos na captura mesmo após a venda. A nota usa o módulo público do jogo e o catálogo com as correções de bases e linhagens. Registros antigos ou incompletos mostram **—** nos atributos indisponíveis e ficam após as notas conhecidas. O total de capturados vem da Sessão e pode ter sido resetado em outro momento.
+
+Os custos são a estimativa de reposição dos consumíveis em ouro, usando preços de loja e as correções públicas do jogo. Tokens e itens sem preço conhecido ficam fora do total e são sinalizados; não há cotação pelo mercado. Os boosts/bônus vêm da faixa ativa do treinador. A seção **Totais por tipo** mostra o percentual combinado e o multiplicador de XP do treinador, XP dos Pokémon, captura, shiny e loot. Os fatores se multiplicam como no jogo (+50% com +20% resulta em +80%): XP usa o total enviado pelo servidor, e os demais tipos combinam os boosters da loja com os resgates ativos da Kick. A expiração acompanha o relógio do servidor; as chances finais de captura e shiny continuam sujeitas aos limites do jogo. Dados de bônus ainda indisponíveis aparecem como **—**. Sem login ou sem dados, o painel informa isso; com a conexão do jogo fechada, identifica os últimos dados disponíveis. A leitura depende dos campos atuais do Pokeidle e não envia comandos nem altera seus resets.
 
 ### Automação de lives
 
@@ -162,7 +188,7 @@ A consulta considera a release marcada como mais recente no GitHub, exclui rascu
 Faça o push das alterações para `main`. O workflow cuida das etapas seguintes:
 
 1. Calcula o próximo patch usando a maior versão estável entre a versão-base de `PokeFarm/package.json`, as tags e as releases existentes, incluindo rascunhos que já reservaram uma versão. Por exemplo: `3.0.0 → 3.0.1 → 3.0.2`.
-2. Grava a mesma versão no `package.json` e nos campos de versão do `Info.plist` das cópias usadas pelos builds. A versão de distribuição fica registrada na tag da release; os arquivos do repositório continuam como base das compilações locais, sem commits automáticos de incremento.
+2. Grava a mesma versão no `package.json` e nos campos de versão do `Info.plist` das cópias usadas pelos builds. A versão de distribuição fica registrada na tag da release; os arquivos do repositório mantêm a versão-base como fallback, sem commits automáticos de incremento. Execuções e builds locais resolvem a versão a partir do histórico Git.
 3. Gera os instaladores Windows/macOS e o app Swift universal. Se um build falhar, a publicação não começa.
 4. Cria um rascunho apontando para o commit exato do push, gera as notas da release, anexa os cinco arquivos de distribuição e `SHA256SUMS.txt`, e confere os uploads.
 5. Publica a release estável e a marca como mais recente. O verificador do app passa a encontrá-la na próxima consulta.
@@ -182,6 +208,9 @@ O recurso só funciona nas instalações que já incluam este verificador. Vers�
 ├── KickMulti.swift        # interface e integração do app Swift (SwiftUI + WebKit)
 ├── LiveAutomation.swift   # consultas e monitoramento online/offline nativos
 ├── ReleaseUpdates.swift   # verificador de releases do app Swift
+├── TraySupport.swift      # barra de menus e janela oculta sem interromper o app Swift
+├── SessionSummary.swift   # painel compacto e leitura das contas do jogo no Swift
+├── AboutView.swift        # Sobre e telas de doação no Swift
 ├── Info.plist             # dados do app Swift
 ├── make_icon.swift        # gera o ícone do app Swift
 ├── build.sh               # compila e abre o PokeFarm.app
