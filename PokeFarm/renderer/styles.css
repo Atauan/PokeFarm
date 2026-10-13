@@ -45,7 +45,22 @@ input[type=text] { min-width: 0; }
 .menu-list button { border: 0; background: transparent; text-align: left; }
 .menu-list button:hover { background: var(--panel2); }
 
-#stage { position: absolute; top: 46px; left: 0; right: 0; bottom: 0; }
+#stage { position: absolute; top: 46px; left: 0; right: 0; bottom: 38px; }
+#update-bar { position: absolute; bottom: 0; left: 0; right: 0; height: 38px;
+  display: flex; align-items: center; gap: 12px; padding: 0 10px;
+  background: var(--panel); border-top: 1px solid var(--line); }
+#app-version { flex-shrink: 0; }
+#update-dialog { position: fixed; inset: 0; margin: auto; width: min(460px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px); padding: 28px; color: var(--text); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 80px rgba(0,0,0,.6); }
+#update-dialog::backdrop { background: rgba(0,0,0,.62); }
+#update-dialog h2 { margin: 16px 0 10px; font-size: 22px; }
+#update-dialog p { margin: 0 0 14px; line-height: 1.6; }
+.update-symbol { width: 48px; height: 48px; display: grid; place-items: center;
+  background: #203254; color: #88b6ff; border-radius: 12px; font-size: 30px; }
+.update-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+.update-actions button { padding: 9px 14px; }
+#update-error { color: #ffb5b5; }
 /* Todas as abas ficam carregadas; a ativa só vem para a frente (nada para de rodar) */
 .panel { position: absolute; inset: 0; z-index: 0; pointer-events: none; background: var(--bg); }
 .panel.active { z-index: 2; pointer-events: auto; }

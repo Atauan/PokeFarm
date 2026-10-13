@@ -18,14 +18,15 @@ Várias lives da **Kick** e da **Twitch** numa tela só, sem som, farmando ponto
 - **Carregamento gradual:** inicia as páginas das lives com intervalo de 1,5 segundo para distribuir o trabalho na abertura. O Pokeidle carrega imediatamente.
 - **Sem som por padrão:** cada bloco tem botão de som; "Silenciar todos" na barra.
 - **Faixa de pontos do chat:** cada bloco mostra só o rodapé do chat, com os pontos. Clicando nela, o chat abre inteiro para resgatar.
-- **Twitch:** abre pela página do canal (é a que conta pontos), mostra só o vídeo, em 160p, aceita sozinho o aviso de conteúdo e resgata sozinho o bônus de pontos.
+- **Qualidade configurável:** mínima (160p), 360p, 480p ou automática. A Twitch abre pela página do canal, exibe só o vídeo, aceita o aviso de conteúdo e tenta resgatar o bônus de pontos. A qualidade inicial é 160p; os modos econômicos têm comportamento próprio, descrito abaixo.
 - **Twitch econômica (Swift e Electron, experimental):** substitui os vídeos e chats individuais por um único chat compartilhado, sem renderizar as mensagens. Voltado a testar os bônus do Pokeidle com menos consumo; não garante Pontos do Canal da Twitch.
 - **Kick econômica (Swift e Electron):** usa a qualidade mínima e reduz mensagens e animações dos chats recolhidos, mantendo os vídeos, a faixa de pontos e os eventos de saldo e resgate.
 - **Abas Lives / Pokeidle / Alertas:** trocar de aba não para nada.
 - **Alertas do mercado do Pokeidle:** regras por nome, preço máximo (coins/gemas), % abaixo da média e "só shiny", com notificação do sistema. Só avisa, nunca compra.
 - **Rodar 24h:** o computador não dorme com o app aberto, inclusive com a tela bloqueada; live parada é recarregada; página travada é recarregada; sem internet, tenta de novo a cada 30 s.
 - **Skeleton de carregamento** no lugar da tela branca.
-- **Login uma vez só:** vale para todos os blocos e para o jogo. Botão para abrir qualquer canal no Microsoft Edge.
+- **Aviso de atualização (Swift e Electron):** consulta releases estáveis do GitHub ao abrir e a cada hora, mostra um modal central e notifica uma vez por versão. **Ver release / baixar** abre a página da release no navegador; **Agora não** ou Esc fecha o aviso. O usuário escolhe e instala o download.
+- **Sessões salvas:** o login da Twitch ou Kick vale para todos os blocos e janelas daquele site. O login do Pokeidle é feito no próprio jogo. Os canais e o jogo também podem ser abertos no Microsoft Edge, que usa sua própria sessão.
 
 ## Duas versões
 
@@ -34,11 +35,30 @@ Várias lives da **Kick** e da **Twitch** numa tela só, sem som, farmando ponto
 | Sistemas | macOS 13+ | macOS e Windows |
 | Motor das páginas | WebKit (Safari) | Chromium (Chrome/Edge) |
 | Tamanho | ~1 MB | ~100 MB |
-| Precisa de | Xcode Command Line Tools | Node.js 22+ |
+| Para compilar/executar pelo código | Xcode Command Line Tools no Mac | Node.js 22+ e npm |
 
-A automação de lives online/offline está disponível nas duas versões. Os logins, canais e preferências de uma versão não passam para a outra.
+A automação de lives, os modos econômicos e o aviso de atualização estão implementados nas duas versões. Os logins, canais e preferências de uma versão não passam para a outra. Os aplicativos já empacotados não exigem instalar Node.js nem Xcode Command Line Tools.
 
-## Versão Swift (só Mac)
+## Baixar e abrir
+
+Quando houver uma release publicada, os arquivos ficam em [Releases](https://github.com/RaullPereira/PokeFarm/releases). Escolha o arquivo adequado:
+
+| Arquivo | Uso |
+|---|---|
+| `PokeFarm-Setup-<versão>.exe` | Instala o Electron no Windows x64 |
+| `PokeFarm-Portable-<versão>.exe` | Executa o Electron no Windows x64 sem instalador |
+| `PokeFarm-<versão>-arm64.dmg` | Electron para Mac com Apple Silicon |
+| `PokeFarm-<versão>-x64.dmg` | Electron para Mac com Intel |
+| `PokeFarm-Swift-<versão>-universal.zip` | App nativo Swift para Mac com Apple Silicon ou Intel |
+| `SHA256SUMS.txt` | Hashes SHA-256 dos cinco arquivos de distribuição |
+
+O app Swift é uma distribuição separada: extraia o `.zip` e mova o `PokeFarm.app` para Aplicativos. Os arquivos `.dmg` contêm o Electron.
+
+Na primeira abertura do `.exe`, o Windows pode mostrar "O Windows protegeu o computador": clique em **Mais informações → Executar assim mesmo** (o app não tem assinatura digital paga). No macOS, se o app for bloqueado, clique com o botão direito e escolha **Abrir**.
+
+## Executar pelo código
+
+### Swift (só Mac)
 
 ```bash
 xcode-select --install          # só na primeira vez
@@ -49,24 +69,33 @@ cd PokeFarm
 
 O `build.sh` compila, gera o ícone, cria o `PokeFarm.app` e abre. Pode arrastar o app para Aplicativos. Se o macOS bloquear, clique com o botão direito no app e escolha **Abrir**.
 
-## Versão Electron (Mac e Windows)
+Para gerar um app universal (Apple Silicon e Intel) sem abri-lo ao terminar, use `./build.sh --universal --no-open`.
+
+### Electron (Mac e Windows)
+
+Com Node.js 22+ e npm instalados, partindo de uma pasta onde o repositório ainda não foi clonado:
 
 ```bash
-cd PokeFarm
+git clone https://github.com/RaullPereira/PokeFarm.git
+cd PokeFarm/PokeFarm
 npm install
 npm start                       # abre direto, sem gerar instalador
 ```
 
-Gerar instaladores (saem em `PokeFarm/dist/`):
+Se já estiver na raiz do repositório, basta entrar na subpasta `PokeFarm` antes dos comandos npm.
+
+### Gerar instaladores
+
+Dentro da subpasta `PokeFarm`, execute o comando do sistema correspondente. Os arquivos saem em `PokeFarm/dist/`, relativo à raiz do repositório:
 
 ```bash
 npm run dist:mac                # .dmg para Apple Silicon e Intel (rodar no Mac)
 npm run dist:win                # instalador .exe e versão portátil .exe (rodar no Windows)
 ```
 
-Para gerar o `.exe` num Mac é preciso ter o Wine (`brew install --cask wine-stable`). Sem Windows por perto, use o GitHub Actions: **Actions → PokeFarm build → Run workflow** gera o `.dmg` e o `.exe` e deixa para baixar em *Artifacts*.
+O workflow **PokeFarm build** roda a cada push na `main`, usa runners Windows e macOS e publica uma release com patch incrementado automaticamente. Ele gera os instaladores Electron para os dois sistemas e o app nativo Swift universal para Mac.
 
-Na primeira abertura do `.exe`, o Windows pode mostrar "O Windows protegeu o computador": clique em **Mais informações → Executar assim mesmo** (o app não tem assinatura digital paga).
+Os instaladores Electron e o pacote Swift ficam anexados à release e também disponíveis nos artifacts **PokeFarm-Windows** e **PokeFarm-macOS**. É possível acionar o mesmo fluxo em **Actions → PokeFarm build → Run workflow**, selecionando a branch `main`; um commit já publicado é ignorado. Veja [como publicar uma atualização](#publicar-uma-atualização).
 
 ## Como usar
 
@@ -75,8 +104,9 @@ Na primeira abertura do `.exe`, o Windows pode mostrar "O Windows protegeu o com
 3. **Organizar:** use **Colunas** (Auto escolhe o tamanho que deixa os vídeos maiores) ou arraste e redimensione cada bloco. **▦** volta tudo para a grade.
 4. **Resgatar pontos:** clique na faixa do chat do bloco; o chat abre inteiro. Feche a janela (Swift) ou clique fora / Esc (Electron) para voltar à faixa.
 5. **Alertas:** abra o Community Market no jogo uma vez, para o app aprender de onde vêm os anúncios. Depois cadastre as regras na aba **Alertas** e clique em **Testar notificação** para conferir se o sistema deixa o app notificar.
+6. **Atualizações:** quando surgir o modal central, escolha **Ver release / baixar** ou **Agora não**. Esc também fecha. Para consultar novamente, use **Verificar atualizações** no rodapé. O aviso não instala arquivos nem reinicia o app.
 
-### Dicas para 24h
+### Automação de lives
 
 Nas duas versões, a aba **Lives** tem três controles: **Gerenciar lives automaticamente**, **Verificar a cada** e **Verificar agora**. O automático vem ligado. O intervalo inicial é de 1 minuto e pode ser alterado para 30 segundos, 2 ou 5 minutos, inclusive antes de ligar o automático. O app precisa continuar aberto para monitorar.
 
@@ -112,9 +142,37 @@ Ao clicar na faixa para abrir o chat, as novas mensagens voltam a aparecer e os 
 
 O embed atual da Kick não oferece o antigo menu de qualidade. O app encontra a API do player associada ao vídeo e seleciona a melhor opção até o limite configurado (ou a menor disponível). Se essa estrutura mudar, a reprodução continua, mas a seleção pode deixar de funcionar.
 
-- Deixe o notebook na tomada. Fechar a tampa sem monitor externo faz o computador dormir, e aí nada roda.
+### Dicas para 24h
+
+- Deixe o notebook na tomada. Fechar a tampa pode suspender o computador, e durante a suspensão o app não roda.
 - Bloquear a tela pode: as lives e o jogo continuam.
 - Se algo travar depois de muitas horas, o botão **⟳** do bloco (ou "Recarregar jogo") resolve sem fechar o app.
+
+## Atualizações pelo GitHub
+
+As versões Electron (Windows/macOS) e Swift (macOS) consultam as releases públicas de `RaullPereira/PokeFarm` ao abrir e a cada hora enquanto o app estiver aberto. Quando há uma versão mais nova, mostram um modal no centro da janela com a versão atual, a nova versão, **Ver release / baixar** e **Agora não**. Esc também fecha o modal. O modal aparece automaticamente uma vez por versão, inclusive entre reinicializações; as lives e o jogo continuam rodando por trás. Uma notificação do sistema também avisa uma vez por versão, independentemente do modal.
+
+O rodapé mantém a versão instalada e **Verificar atualizações**, que abre novamente o modal e mostra o resultado da consulta mesmo quando não há atualização. O modal funciona mesmo se as notificações do sistema estiverem bloqueadas.
+
+A consulta considera a release marcada como mais recente no GitHub, exclui rascunhos e pré-releases, e compara tags como `v3.1.0` numericamente. Consultas manuais têm intervalo mínimo de um minuto e respeitam os limites de requisições informados pelo GitHub. Sem internet ou com erro de API, tenta novamente no próximo ciclo; uma atualização já encontrada continua acessível. Não baixa, instala nem reinicia automaticamente.
+
+### Publicar uma atualização
+
+Faça o push das alterações para `main`. O workflow cuida das etapas seguintes:
+
+1. Calcula o próximo patch usando a maior versão estável entre a versão-base de `PokeFarm/package.json`, as tags e as releases existentes, incluindo rascunhos que já reservaram uma versão. Por exemplo: `3.0.0 → 3.0.1 → 3.0.2`.
+2. Grava a mesma versão no `package.json` e nos campos de versão do `Info.plist` das cópias usadas pelos builds. A versão de distribuição fica registrada na tag da release; os arquivos do repositório continuam como base das compilações locais, sem commits automáticos de incremento.
+3. Gera os instaladores Windows/macOS e o app Swift universal. Se um build falhar, a publicação não começa.
+4. Cria um rascunho apontando para o commit exato do push, gera as notas da release, anexa os cinco arquivos de distribuição e `SHA256SUMS.txt`, e confere os uploads.
+5. Publica a release estável e a marca como mais recente. O verificador do app passa a encontrá-la na próxima consulta.
+
+O workflow usa o `GITHUB_TOKEN` fornecido pelo Actions; não exige cadastrar um token pessoal. Os jobs de preparação e publicação recebem `contents: write`: a preparação precisa enxergar os rascunhos, que a [API restringe a quem tem acesso de escrita](https://docs.github.com/en/rest/releases/releases#list-releases). Os builds usam apenas leitura. As regras do repositório precisam permitir que o workflow crie tags e releases. Pushes são processados um por vez, com [fila de até 100 execuções pendentes](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+
+Se um upload falhar, a release permanece em rascunho. Use **Re-run failed jobs** para tentar novamente: o fluxo reaproveita a versão e substitui os uploads incompletos daquele rascunho. Uma release já publicada não é sobrescrita. Reexecuções de commits já incluídos em uma release posterior são ignoradas; a retomada de uma versão antiga não substitui uma versão mais nova como **Latest**.
+
+O incremento afeta o patch. Para começar outra linha de versões, aumente a versão-base em `PokeFarm/package.json` e alinhe o `Info.plist` para os builds locais; uma base `3.1.0`, acima das versões existentes, gera `3.1.1` no próximo push. Criar artifacts ou tags isoladamente não aciona a notificação: o app consulta releases publicadas.
+
+O recurso só funciona nas instalações que já incluam este verificador. Versões antigas precisam de uma atualização manual inicial. Os downloads são escolhidos pelo usuário na página da release.
 
 ## Estrutura
 
@@ -122,25 +180,29 @@ O embed atual da Kick não oferece o antigo menu de qualidade. O app encontra a 
 .
 ├── KickMulti.swift        # interface e integração do app Swift (SwiftUI + WebKit)
 ├── LiveAutomation.swift   # consultas e monitoramento online/offline nativos
+├── ReleaseUpdates.swift   # verificador de releases do app Swift
 ├── Info.plist             # dados do app Swift
 ├── make_icon.swift        # gera o ícone do app Swift
 ├── build.sh               # compila e abre o PokeFarm.app
 ├── PokeFarm/              # app Electron (Mac e Windows)
 │   ├── main.js            # janela, sessão compartilhada, energia, notificações
 │   ├── live-status.js     # consultas de estado online/offline da Kick e Twitch
+│   ├── release-updates.js # consulta releases e evita notificações repetidas
 │   ├── game-channels.js   # leitor das listas oficiais, compartilhado com o app Swift
 │   ├── twitch-economy.js  # chat Twitch compartilhado, usado nas duas versões
 │   ├── kick-economy.js    # chat Kick leve, preservando pontos e reprodução
 │   ├── preload.js         # ponte segura entre interface e sistema
 │   ├── webview-preload.js # scripts das lives, chats e leitura do mercado
-│   ├── renderer/          # interface (HTML, CSS, JS)
-│   └── tools/make-icon.js # gera o ícone
-└── .github/workflows/     # build automático do Mac e Windows
+│   ├── renderer/          # interface, incluindo o modal em updates.js
+│   └── tools/             # geração do ícone
+└── .github/
+    ├── scripts/release.cjs # versão automática e publicação com todos os arquivos
+    └── workflows/         # builds e release a cada push na main
 ```
 
 ## Privacidade
 
-Tudo fica no seu computador: logins (cookies), canais, regras e histórico de alertas. O app não envia nada para servidores além dos próprios sites (Kick, Twitch e Pokeidle). As amostras do mercado ficam numa pasta local, aberta pelo botão **Abrir amostras**.
+Logins (cookies), canais, regras, histórico de alertas e versões já notificadas ficam no seu computador. Além de acessar Kick, Twitch e Pokeidle, o app consulta a API pública do GitHub para verificar atualizações, sem enviar cookies, tokens de login, canais ou dados do jogo nessa consulta. Como em qualquer acesso HTTP, o GitHub recebe o IP e os cabeçalhos da requisição. As amostras do mercado ficam numa pasta local, aberta pelo botão **Abrir amostras**.
 
 ## Contribuindo
 

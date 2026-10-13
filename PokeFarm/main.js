@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { createLiveStatusService } = require('./live-status');
+const { createReleaseChecker } = require('./release-updates');
 
 // Todas as lives, chats, jogo e janelas de login usam a mesma sessão: logou uma vez, vale para tudo
 const PARTITION = 'persist:pokefarm';
@@ -29,6 +30,30 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 let win = null;
+let updateChecker = null;
+let updateTimer = null;
+
+function startUpdateChecks() {
+  const settingsFile = path.join(app.getPath('userData'), 'update-notifications.json');
+  let notifiedVersions = [];
+  try { notifiedVersions = JSON.parse(fs.readFileSync(settingsFile, 'utf8')); } catch (_) { /* primeira abertura */ }
+  updateChecker = createReleaseChecker({
+    currentVersion: app.getVersion(), notifiedVersions,
+    persistNotified: versions => fs.writeFileSync(settingsFile, JSON.stringify(versions)),
+    onChange: state => {
+      if (win && !win.isDestroyed()) win.webContents.send('update-state', state);
+    },
+    onAvailable: update => {
+      if (!Notification.isSupported()) return;
+      const notification = new Notification({ title: 'Atualização do PokeFarm',
+        body: `A versão ${update.version} está disponível. Clique para ver a release.` });
+      notification.on('click', () => { void shell.openExternal(update.url).catch(() => {}); });
+      notification.show();
+    },
+  });
+  void updateChecker.check();
+  updateTimer = setInterval(() => { void updateChecker.check(); }, 60 * 60 * 1000);
+}
 
 const LOGIN_URLS = {
   twitch: 'https://www.twitch.tv/login',
@@ -154,6 +179,16 @@ app.on('web-contents-created', (_e, contents) => {
 
 // MARK: IPC da interface
 
+const fromMainWindow = e => !!win && e.sender === win.webContents && e.senderFrame === win.webContents.mainFrame;
+ipcMain.handle('update-state', e => fromMainWindow(e) ? updateChecker?.getState() : null);
+ipcMain.handle('check-updates', e => fromMainWindow(e) ? updateChecker?.check() : null);
+ipcMain.handle('open-update', async e => {
+  if (!fromMainWindow(e)) return false;
+  const url = updateChecker?.getState().release?.url;
+  if (!url) return false;
+  try { await shell.openExternal(url); return true; } catch (_) { return false; }
+});
+
 ipcMain.handle('live-status', (e, platform, channels) => {
   if (!win || e.sender !== win.webContents || e.senderFrame !== win.webContents.mainFrame) {
     return {};
@@ -245,7 +280,9 @@ app.whenReady().then(() => {
   powerSaveBlocker.start('prevent-app-suspension');
   powerSaveBlocker.start('prevent-display-sleep');
   createWindow();
+  startUpdateChecks();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
 app.on('window-all-closed', () => app.quit());
+app.on('before-quit', () => { if (updateTimer) clearInterval(updateTimer); });

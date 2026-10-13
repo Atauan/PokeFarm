@@ -28,6 +28,7 @@
     "files": [
       "main.js",
       "live-status.js",
+      "release-updates.js",
       "game-channels.js",
       "twitch-economy.js",
       "kick-economy.js",

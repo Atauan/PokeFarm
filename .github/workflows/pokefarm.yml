@@ -1,13 +1,50 @@
-# Gera o PokeFarm para Mac (.dmg) e Windows (.exe) em máquinas reais de cada sistema.
-# Uso: suba esta pasta para um repositório no GitHub e rode em Actions > PokeFarm build > Run workflow.
+# Incrementa o patch e publica Electron + Swift em cada push na main.
 name: PokeFarm build
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+# Uma versão por vez; novos pushes aguardam sem cancelar o build em andamento.
+concurrency:
+  group: pokefarm-release-main
+  cancel-in-progress: false
+  queue: max
+
 jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A API só lista rascunhos para tokens com acesso de escrita ao conteúdo.
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      build: ${{ steps.release.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Choose or resume release version
+        id: release
+        run: node .github/scripts/release.cjs prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   build:
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
+    timeout-minutes: 45
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
@@ -23,13 +60,54 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Stamp the release version into Electron and Swift
+        working-directory: .
+        run: node .github/scripts/release.cjs stamp
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
       - run: npm install
-      - run: npm run ${{ matrix.script }}
+      - run: npm run ${{ matrix.script }} -- --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Build and package the universal Swift app
+        if: runner.os == 'macOS'
+        working-directory: .
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          ./build.sh --universal --no-open
+          ditto -c -k --sequesterRsrc --keepParent PokeFarm.app "PokeFarm/dist/PokeFarm-Swift-${RELEASE_VERSION}-universal.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: PokeFarm-${{ runner.os }}
+          if-no-files-found: error
+          overwrite: true
+          compression-level: 0
           path: |
             PokeFarm/dist/*.dmg
             PokeFarm/dist/*.exe
+            PokeFarm/dist/PokeFarm-Swift-*.zip
+
+  publish:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: PokeFarm-*
+          path: release-assets
+          merge-multiple: true
+      - name: Upload all assets to a draft and publish the completed release
+        run: node .github/scripts/release.cjs publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          ASSET_DIR: release-assets

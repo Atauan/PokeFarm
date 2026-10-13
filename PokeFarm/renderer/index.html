@@ -176,11 +176,30 @@
     </section>
   </main>
 
+  <footer id="update-bar" aria-label="Atualizações do PokeFarm">
+    <span id="app-version" class="muted">PokeFarm</span>
+    <span class="spacer"></span>
+    <button id="check-updates">Verificar atualizações</button>
+  </footer>
+
+  <dialog id="update-dialog" aria-labelledby="update-title" aria-describedby="update-status">
+    <div class="update-symbol" aria-hidden="true">↓</div>
+    <h2 id="update-title">Atualizações do PokeFarm</h2>
+    <p id="update-status" role="status" aria-live="polite"></p>
+    <p class="muted small">Suas lives e o jogo continuam rodando. Você escolhe quando atualizar.</p>
+    <p id="update-error" role="alert" hidden></p>
+    <div class="update-actions">
+      <button id="dismiss-update" autofocus>Agora não</button>
+      <button id="open-update" class="primary" hidden>Ver release / baixar</button>
+    </div>
+  </dialog>
+
   <!-- Cobre a tela durante arrastes (senão as lives "roubam" o mouse) -->
   <div id="shield" hidden></div>
   <div id="toast" role="status" aria-live="polite" hidden></div>
 
   <script src="live-state.js"></script>
   <script src="app.js"></script>
+  <script src="updates.js"></script>
 </body>
 </html>

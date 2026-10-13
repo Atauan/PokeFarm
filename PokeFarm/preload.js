@@ -4,6 +4,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('pf', {
   platform: process.platform,
+  updateState: () => ipcRenderer.invoke('update-state'),
+  checkUpdates: () => ipcRenderer.invoke('check-updates'),
+  openUpdate: () => ipcRenderer.invoke('open-update'),
+  onUpdateState: (cb) => ipcRenderer.on('update-state', (_e, state) => cb(state)),
   liveStatus: (platform, channels) => ipcRenderer.invoke('live-status', platform, channels),
   notify: (title, body) => ipcRenderer.send('notify', { title: String(title), body: String(body) }),
   attention: () => ipcRenderer.send('attention'),

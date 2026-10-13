@@ -1338,9 +1338,14 @@ final class MarketWatcher: NSObject, ObservableObject, WKScriptMessageHandler, U
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
+        let updateTag = response.notification.request.content.userInfo["updateTag"] as? String
         DispatchQueue.main.async {
             NSApp.activate(ignoringOtherApps: true)
-            NotificationCenter.default.post(name: .pfOpenGame, object: nil)
+            if let updateTag, let url = ReleaseUpdate.url(forTag: updateTag) {
+                NSWorkspace.shared.open(url)
+            } else {
+                NotificationCenter.default.post(name: .pfOpenGame, object: nil)
+            }
         }
         completionHandler()
     }
@@ -1358,6 +1363,15 @@ final class MarketWatcher: NSObject, ObservableObject, WKScriptMessageHandler, U
 
     func testNotification() {
         notify(title: "PokeFarm", body: "Teste de alerta: notificações funcionando.")
+    }
+
+    func notifyUpdate(_ update: ReleaseUpdate) {
+        let content = UNMutableNotificationContent()
+        content.title = "Atualização do PokeFarm"
+        content.body = "A versão \(update.version) está disponível. Clique para ver a release."
+        content.userInfo = ["updateTag": update.tag]
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "pokefarm-update-\(update.version)", content: content, trigger: nil))
     }
 
     // MARK: Página -> app
@@ -2079,8 +2093,66 @@ struct LiveControls: View {
 }
 
 @MainActor
+struct UpdateDialog: View {
+    @EnvironmentObject var updates: ReleaseUpdateChecker
+    @State private var openError = false
+    @FocusState private var dismissFocused: Bool
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.6).ignoresSafeArea()
+                .onTapGesture { /* clique fora não fecha o aviso */ }
+            VStack(alignment: .leading, spacing: 16) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 38)).foregroundStyle(Color.accentColor)
+                    .accessibilityHidden(true)
+                Text(updates.release == nil ? "Atualizações do PokeFarm" : "Nova versão disponível")
+                    .font(.title2.bold())
+                if let release = updates.release {
+                    Text("A versão \(release.version) já está disponível. Você está usando a \(updates.currentVersion).")
+                    if updates.status == "error" {
+                        Text("A consulta está indisponível no momento, mas você pode abrir a release já encontrada.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text(updates.message)
+                }
+                Text("Suas lives e o jogo continuam rodando. Você escolhe quando atualizar.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if openError {
+                    Text("Não foi possível abrir o navegador. Tente novamente.")
+                        .font(.caption).foregroundStyle(.red)
+                }
+                HStack(spacing: 10) {
+                    Spacer()
+                    Button(updates.release == nil ? "Fechar" : "Agora não") { updates.dismissDialog() }
+                        .keyboardShortcut(.cancelAction)
+                        .focused($dismissFocused)
+                    if let release = updates.release {
+                        Button("Ver release / baixar") {
+                            if NSWorkspace.shared.open(release.url) { updates.dismissDialog() }
+                            else { openError = true }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+                .padding(.top, 8)
+            }
+            .padding(28).frame(width: 460)
+            .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.12)))
+            .shadow(color: .black.opacity(0.4), radius: 30, y: 12)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Atualizações do PokeFarm")
+            .onAppear { dismissFocused = true }
+        }
+    }
+}
+
+@MainActor
 struct ContentView: View {
     @EnvironmentObject var store: Store
+    @EnvironmentObject var updates: ReleaseUpdateChecker
     @State private var input = ""
     @State private var target: Platform = .kick
     @State private var toast: String?
@@ -2140,7 +2212,19 @@ struct ContentView: View {
                         .zIndex(2)
                 }
             }
+            Divider()
+            HStack(spacing: 12) {
+                Text("PokeFarm \(updates.currentVersion)").foregroundStyle(.secondary)
+                Spacer()
+                Button("Verificar atualizações") { Task { await updates.checkManually() } }
+                    .disabled(updates.status == "checking")
+            }
+            .font(.caption)
+            .padding(.horizontal, 10).padding(.vertical, 8)
         }
+        .allowsHitTesting(!updates.dialogPresented)
+        .disabled(updates.dialogPresented)
+        .accessibilityHidden(updates.dialogPresented)
         .onReceive(NotificationCenter.default.publisher(for: .pfOpenGame)) { _ in store.tab = .game }
         .onReceive(NotificationCenter.default.publisher(for: .pfAddLive)) { n in
             guard let link = n.object as? String else { return }
@@ -2163,6 +2247,9 @@ struct ContentView: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: toast)
+        .overlay {
+            if updates.dialogPresented { UpdateDialog().environmentObject(updates) }
+        }
     }
 
     /// Link de live clicado no jogo: vira bloco na aba Lives (o jogo continua aberto).
@@ -2302,6 +2389,7 @@ enum KeepAwake {
 @MainActor
 struct KickMultiApp: App {
     @StateObject private var store = Store()
+    @StateObject private var updates = ReleaseUpdateChecker()
 
     init() {
         KeepAwake.start()
@@ -2312,6 +2400,11 @@ struct KickMultiApp: App {
         WindowGroup("PokeFarm") {
             ContentView()
                 .environmentObject(store)
+                .environmentObject(updates)
+                .task {
+                    updates.onAvailable = { MarketWatcher.shared.notifyUpdate($0) }
+                    updates.start()
+                }
                 .frame(minWidth: 1100, minHeight: 500)
         }
     }
