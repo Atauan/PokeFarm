@@ -19,6 +19,8 @@ Várias lives da **Kick** e da **Twitch** numa tela só, sem som, farmando ponto
 - **Abas Lives / Pokeidle / Alertas:** trocar de aba não para nada.
 - **Alertas do mercado do Pokeidle:** regras por nome, preço máximo (coins/gemas), % abaixo da média e "só shiny", com notificação do sistema. Só avisa, nunca compra.
 - **Rodar 24h:** o computador não dorme com o app aberto, inclusive com a tela bloqueada; live parada é recarregada; página travada é recarregada; sem internet, tenta de novo a cada 30 s.
+- **Lives automáticas:** a cada 2 min o app confere quem está ao vivo. Canais offline viram um cartão leve (sem página aberta) e voltam sozinhos. Os canais oficiais do Pokeidle (aprendidos ao abrir o "Bônus Twitch" no jogo) entram quando ficam ao vivo e saem quando a live acaba. Até 20 lives abertas ao mesmo tempo.
+- **Mais leve:** Twitch sem página de chat separada (pontos e bônus vêm da página do canal), páginas abertas uma de cada vez e recarga automática a cada 6 h para liberar memória.
 - **Skeleton de carregamento** no lugar da tela branca.
 - **Login uma vez só:** vale para todos os blocos e para o jogo. Botão para abrir qualquer canal no Microsoft Edge.
 

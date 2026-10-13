@@ -68,6 +68,79 @@ function addLive(link) {
   if (win && !win.isDestroyed()) win.webContents.send('add-live', link);
 }
 
+// MARK: Quem está ao vivo (Twitch: GraphQL público; Kick: API do site, de dentro de uma página da Kick)
+
+const LIVE_NAME = /^[a-z0-9_-]{2,40}$/;
+let kickHelper = null;
+let kickReady = null;
+
+function resetKickHelper() {
+  if (kickHelper && !kickHelper.isDestroyed()) kickHelper.destroy();
+  kickHelper = null;
+  kickReady = null;
+}
+
+function getKickHelper() {
+  if (kickReady && kickHelper && !kickHelper.isDestroyed()) return kickReady;
+  kickHelper = new BrowserWindow({
+    show: false, width: 400, height: 300,
+    webPreferences: { partition: PARTITION, contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: false },
+  });
+  const w = kickHelper;
+  kickReady = w.loadURL('https://kick.com/api/v2/channels/kick').then(() => w).catch(() => { resetKickHelper(); return null; });
+  return kickReady;
+}
+
+async function checkTwitch(names) {
+  const out = {};
+  for (let i = 0; i < names.length; i += 30) {
+    const chunk = names.slice(i, i + 30).filter((n) => /^[a-z0-9_]{2,25}$/.test(n));
+    if (!chunk.length) continue;
+    const q = chunk.map((n, j) => `u${j}: user(login: "${n}") { stream { id } }`).join(' ');
+    try {
+      const r = await fetch('https://gql.twitch.tv/gql', {
+        method: 'POST',
+        headers: { 'Client-Id': 'kimne78kx3ncx6brgo4mv6wki5h1ko', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: `query { ${q} }` }),
+      });
+      const j = await r.json();
+      if (!j || !j.data) continue;
+      chunk.forEach((n, k) => {
+        if (!(`u${k}` in j.data)) return;
+        const u = j.data[`u${k}`];
+        out[n] = !!(u && u.stream);
+      });
+    } catch (_) { /* sem internet: fica como estava */ }
+  }
+  return out;
+}
+
+async function checkKick(names) {
+  if (!names.length) return {};
+  const w = await getKickHelper();
+  if (!w || w.isDestroyed()) return {};
+  const js = `(async (names) => {
+    const out = {};
+    for (const n of names) {
+      try {
+        const r = await fetch('/api/v2/channels/' + encodeURIComponent(n), { credentials: 'include', headers: { Accept: 'application/json' } });
+        if (r.status === 404) out[n] = false;
+        else if (r.ok) { const j = await r.json(); out[n] = !!(j && j.livestream && j.livestream.is_live !== false); }
+      } catch (e) {}
+      await new Promise((res) => setTimeout(res, 300));
+    }
+    return out;
+  })(${JSON.stringify(names)})`;
+  try {
+    const out = await w.webContents.executeJavaScript(js);
+    if (!out || !Object.keys(out).length) resetKickHelper();
+    return out || {};
+  } catch (_) {
+    resetKickHelper();
+    return {};
+  }
+}
+
 const fromApp = (e) => !!(e.senderFrame && String(e.senderFrame.url).startsWith('file://'));
 
 function createWindow() {
@@ -95,7 +168,8 @@ function createWindow() {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.on('render-process-gone', () => setTimeout(() => win && !win.isDestroyed() && win.reload(), 2000));
-  win.on('closed', () => { win = null; });
+  // A janela escondida da Kick não pode segurar o app aberto
+  win.on('closed', () => { win = null; resetKickHelper(); app.quit(); });
 }
 
 app.on('web-contents-created', (_e, contents) => {
@@ -207,6 +281,14 @@ ipcMain.on('write-sample', (e, msg) => {
     const line = JSON.stringify({ date: new Date().toISOString(), url: String(msg.url).slice(0, 500), body: String(msg.text).slice(0, 30000) });
     fs.appendFileSync(file, line + '\n');
   } catch (_) { /* ignora */ }
+});
+
+ipcMain.handle('check-live', async (e, req) => {
+  if (!fromApp(e) || !req) return { twitch: {}, kick: {} };
+  const clean = (a) => [...new Set((Array.isArray(a) ? a : []).map((s) => String(s).toLowerCase()))]
+    .filter((s) => LIVE_NAME.test(s)).slice(0, 200);
+  const [twitch, kick] = await Promise.all([checkTwitch(clean(req.twitch)), checkKick(clean(req.kick))]);
+  return { twitch, kick };
 });
 
 ipcMain.on('open-data-dir', (e) => {

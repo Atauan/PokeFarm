@@ -138,3 +138,17 @@ webview { background: #0b0b0c; }
 #toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 10000;
   background: rgba(30,31,35,.95); border: 1px solid var(--line); border-radius: 999px;
   padding: 9px 16px; font-weight: 600; box-shadow: 0 8px 24px rgba(0,0,0,.5); pointer-events: none; }
+
+/* Corpo do bloco, cartão offline/na fila, selo oficial e faixa de pontos da Twitch */
+.tile .body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.idle { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  background: #0d0d0f; text-align: center; padding: 8px; }
+.idle-icon { font-size: 22px; opacity: .7; }
+.hdr .badge { font-size: 8px; font-weight: 700; color: var(--muted); letter-spacing: .04em; }
+.chat.strip { height: 26px; display: flex; align-items: center; gap: 6px; padding: 0 8px; background: var(--panel); }
+.chat.strip .seal { color: var(--twitch); font-size: 10px; }
+.chat.strip .pts { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat.strip .sp { flex: 1; }
+.chat.strip button { border: 0; background: transparent; padding: 0 4px; font-size: 11px; }
+#grid.nochat .chat.strip { display: none; }
+#grid .chat.strip.expanded { display: block; padding: 0; }

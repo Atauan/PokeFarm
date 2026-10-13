@@ -128,6 +128,19 @@ function player() {
   document.addEventListener('DOMContentLoaded', addCSS);
   setInterval(() => {
     addCSS();
+    // Pontos: a coluna do chat fica atrás do vídeo (o app deixa a página larga); lê o saldo e resgata o bônus
+    const bal = document.querySelector('[data-test-selector="copo-balance-string"]');
+    const txt = bal && (bal.textContent || '').trim();
+    if (txt && txt !== window.__kmBal) { window.__kmBal = txt; window.postMessage({ __pfPoints: txt }, '*'); }
+    const bicon = document.querySelector('.claimable-bonus__icon');
+    const bonus = bicon ? bicon.closest('button')
+      : document.querySelector('button[aria-label="Claim Bonus"], button[aria-label="Resgatar bônus"]');
+    if (bonus) bonus.click();
+    // Chat recolhido = sem pontos: expande a coluna
+    if (!document.querySelector('.chat-shell, [data-a-target="chat-input"]')) {
+      const exp = document.querySelector('button[data-a-target="right-column__toggle-collapse-btn"]');
+      if (exp && /expand|expandir/i.test(exp.getAttribute('aria-label') || '')) exp.click();
+    }
     // Aviso "Destinado a públicos específicos"
     let gate = document.querySelector(
       'button[data-a-target="content-classification-gate-overlay-start-watching-button"],' +
@@ -302,6 +315,36 @@ function market() {
     });
     if (out.length) post({ url: 'dom', items: out });
   }, 10000);
+
+  // Canais oficiais (modal "Bônus Twitch"): aprende a lista para abrir as lives sozinho
+  const official = {};
+  setInterval(() => {
+    const heads = Array.from(document.querySelectorAll('div, span, p, h1, h2, h3, h4, h5'))
+      .filter((e) => e.children.length === 0 && /^\s*canais oficiais\s*$/i.test(e.textContent || ''));
+    const found = [];
+    heads.forEach((h) => {
+      let box = h.parentElement;
+      for (let i = 0; i < 4 && box && !/ao vivo|offline/i.test(box.innerText || ''); i++) box = box.parentElement;
+      if (!box) return;
+      box.querySelectorAll('a[href*="twitch.tv/"], a[href*="kick.com/"]').forEach((a) => found.push(a.href));
+      if (found.length) return;
+      // Sem links: cada linha com "AO VIVO" -> primeira palavra é o canal
+      box.querySelectorAll('*').forEach((e) => {
+        const t = e.innerText || '';
+        if (!/ao vivo/i.test(t) || t.length > 160) return;
+        const inner = Array.from(e.children).some((c) => {
+          const ct = c.innerText || '';
+          return /ao vivo/i.test(ct) && ct.length >= t.length * 0.9;
+        });
+        if (inner) return;
+        const name = t.split('\n').map((l) => l.trim()).find((l) => /^[A-Za-z0-9_]{3,25}$/.test(l));
+        if (name) found.push(`${/kick/i.test(e.innerHTML) ? 'kick.com/' : 'twitch.tv/'}${name.toLowerCase()}`);
+      });
+    });
+    let novo = false;
+    found.forEach((l) => { if (!official[l]) { official[l] = 1; novo = true; } });
+    if (novo) post({ official: Object.keys(official) });
+  }, 15000);
 }
 
 // ---------- Qual página é esta? ----------
@@ -325,4 +368,9 @@ if (/pokeidle\.io$/.test(host)) {
   document.addEventListener('pointerdown', () => ipcRenderer.sendToHost('chat-click'), true);
 } else if (host === 'player.kick.com' || host === 'www.twitch.tv') {
   inject(player);
+  window.addEventListener('message', (e) => {
+    if (e.source === window && e.data && typeof e.data.__pfPoints === 'string') {
+      ipcRenderer.sendToHost('points', e.data.__pfPoints.slice(0, 20));
+    }
+  });
 }
