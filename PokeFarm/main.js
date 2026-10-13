@@ -224,6 +224,23 @@ function setupSession(part) {
   configuredSessions.add(part);
   const ses = session.fromPartition(part);
   ses.setUserAgent(CHROME_UA);
+  // Uma página de live pode abrir dezenas de iframes de sincronização de anúncios,
+  // cada um com seu renderer. Impede só esse frame conhecido, dentro das webviews
+  // de lives; players, chat, desafios de login e janelas de OAuth passam intactos.
+  ses.webRequest.onBeforeRequest((details, callback) => {
+    let cancel = false;
+    if (details.resourceType === 'subFrame') {
+      try {
+        const page = details.webContents;
+        if (new URL(details.url).hostname === 's.amazon-adsystem.com' &&
+            page && !page.isDestroyed() && page.getType() === 'webview') {
+          cancel = ['www.twitch.tv', 'twitch.tv', 'kick.com', 'www.kick.com', 'player.kick.com']
+            .includes(new URL(page.getURL()).hostname);
+        }
+      } catch (_) { /* página em navegação/fechada: preserva a requisição */ }
+    }
+    callback({ cancel });
+  });
   ses.registerPreloadScript({ id: 'pf-game-channels', type: 'frame', filePath: path.join(__dirname, 'game-channels.js') });
   ses.registerPreloadScript({ id: 'pf-game-session', type: 'frame', filePath: path.join(__dirname, 'game-session.js') });
   ses.registerPreloadScript({ id: 'pf-twitch-economy', type: 'frame', filePath: path.join(__dirname, 'twitch-economy.js') });

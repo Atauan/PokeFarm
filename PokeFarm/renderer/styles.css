@@ -96,7 +96,7 @@ button:disabled, select:disabled { opacity: .5; cursor: default; }
 .chat webview { position: absolute; left: 0; right: 0; bottom: 0; height: 420px; display: flex; }
 #grid.nochat .chat { height: 0; }
 /* Chat aberto inteiro numa "janela" no meio da tela, para o modal de resgate caber */
-#grid .chat.expanded { position: fixed; top: 64px; left: 50%; transform: translateX(-50%);
+#grid .chat.expanded, #grid .shared-twitch.expanded { position: fixed; top: 64px; left: 50%; transform: translateX(-50%);
   width: 440px; height: min(700px, calc(100vh - 90px)); z-index: 2; border: 1px solid var(--line);
   border-radius: 10px; box-shadow: 0 16px 48px rgba(0,0,0,.6); }
 #grid .chat.expanded webview { top: 0; height: 100%; }

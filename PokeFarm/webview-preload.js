@@ -144,7 +144,7 @@ function player() {
     if (gate) gate.click();
     // Prende o container do <video> real na tela inteira
     const v = document.querySelector('video');
-    if (!v) return;
+    if (!v) { window.__pfRefreshTwitchLayout?.(); return; }
     const box = v.closest('[data-a-target="video-player"]') || v.closest('.video-player') ||
       v.closest('.video-player__container') || v.parentElement;
     if (box && !box.classList.contains('km-player')) {
@@ -152,17 +152,107 @@ function player() {
       box.classList.add('km-player');
     }
     for (let a = box && box.parentElement; a && a !== document.body; a = a.parentElement) a.classList.add('km-unclip');
+    window.__pfRefreshTwitchLayout?.();
   }, 1500);
 }
 
 /** Chat da Twitch: clica sozinho no bônus de pontos. */
 function twitchChat() {
   setInterval(() => {
+    if (!/\/popout\//.test(location.pathname) && !document.documentElement.classList.contains('pf-twitch-shared')) return;
     const icon = document.querySelector('.claimable-bonus__icon');
     const b = icon ? icon.closest('button')
       : document.querySelector('button[aria-label="Claim Bonus"], button[aria-label="Resgatar bônus"]');
     if (b) b.click();
   }, 5000);
+}
+
+/** Usa o chat já conectado na página do canal; só altera a apresentação. */
+function twitchLayout() {
+  let state = { enabled: false, expanded: false, showChat: true };
+  let lastReady;
+  const changed = new Map();
+  const style = (node, values) => {
+    if (!node) return;
+    if (!changed.has(node)) changed.set(node, new Map());
+    const original = changed.get(node);
+    for (const [key, value] of Object.entries(values)) {
+      if (!original.has(key)) original.set(key, [node.style.getPropertyValue(key), node.style.getPropertyPriority(key)]);
+      if (node.style.getPropertyValue(key) !== value || node.style.getPropertyPriority(key) !== 'important') node.style.setProperty(key, value, 'important');
+    }
+  };
+  const unclip = node => {
+    for (let p = node?.parentElement; p && p !== document.body; p = p.parentElement) style(p, {
+      transform: 'none', contain: 'none', filter: 'none', 'will-change': 'auto',
+      overflow: 'visible', 'z-index': 'auto', isolation: 'auto',
+    });
+  };
+  const apply = () => {
+    const root = document.documentElement;
+    if (!root) return false;
+    for (const node of changed.keys()) if (!node.isConnected) changed.delete(node);
+    root.classList.toggle('pf-twitch-shared', state.enabled);
+    root.classList.toggle('pf-twitch-points', state.enabled && state.showChat);
+    window.__pfSetChatCompact?.(!state.expanded || !state.enabled);
+    if (!state.enabled) return false;
+    // A preferência salva da Twitch pode deixar o chat montado, mas com display:none.
+    // Abre pelo controle nativo para preservar a conexão e o estado da própria página.
+    if (document.querySelector('.right-column--collapsed')) {
+      document.querySelector('[data-a-target="right-column__toggle-collapse-btn"]')?.click();
+    }
+    const chat = document.querySelector('.chat-shell');
+    const ready = !!chat?.querySelector('.chat-room')?.getClientRects().length;
+    if (ready !== lastReady) { lastReady = ready; window.postMessage({ __pfTwitchChatReady: ready }, '*'); }
+    if (!ready) return false;
+    unclip(chat);
+    style(chat, {position:'fixed',left:'0px',right:'auto',bottom:'0px',top:state.expanded?'180px':'auto',
+      width:'100vw',height:state.expanded?'calc(100vh - 180px)':'420px','max-height':'none',
+      'z-index':state.expanded?'2147483647':'2147483645'});
+    const box = document.querySelector('.km-player');
+    unclip(box);
+    style(box, {top:'0px',left:'0px',right:'auto',bottom:'auto',width:'100vw',
+      height:state.expanded?'180px':state.showChat?'calc(100vh - 46px)':'100vh',
+      'min-height':'0px','max-height':'none','z-index':'2147483646'});
+    style(box?.querySelector('.video-player__container'), {height:'100%','max-height':'none','min-height':'0px'});
+    // Avisos/anúncios podem aumentar o conteúdo mínimo do chat. Mantém o rodapé
+    // dentro da faixa, mesmo enquanto a Twitch reorganiza esses elementos.
+    const footer = chat.querySelector('.chat-input__buttons-container, .community-points-summary');
+    const overflow = footer ? Math.ceil(Math.max(0, footer.getBoundingClientRect().bottom - innerHeight)) : 0;
+    if (overflow) style(chat, state.expanded
+      ? { height: `calc(100vh - ${180 + overflow}px)` }
+      : { bottom: `${overflow}px` });
+    return true;
+  };
+  window.__pfRefreshTwitchLayout = apply;
+  window.__pfSetTwitchLayout = options => {
+    state = { ...state, ...options };
+    if (!state.enabled) {
+      for (const [node, properties] of changed) for (const [key, [value, priority]] of properties) {
+        if (value) node.style.setProperty(key, value, priority); else node.style.removeProperty(key);
+      }
+      changed.clear();
+    }
+    return apply();
+  };
+}
+
+/** A faixa mostra só os pontos: não desenha as mensagens que ficam fora dela. */
+function compactChat() {
+  let compact = true;
+  const apply = () => {
+    document.documentElement?.classList.toggle('pf-chat-compact', compact);
+    if (document.getElementById('pf-chat-compact-css')) return;
+    const style = document.createElement('style');
+    style.id = 'pf-chat-compact-css';
+    // Não remove nós nem filtra mensagens. Ao expandir, o histórico e os eventos
+    // recebidos continuam disponíveis; controles de pontos ficam fora dessas listas.
+    style.textContent = '.pf-chat-compact .chat-scrollable-area__message-container,' +
+      '.pf-chat-compact #chatroom-messages{content-visibility:hidden!important;visibility:hidden!important}';
+    (document.head || document.documentElement)?.appendChild(style);
+  };
+  window.__pfSetChatCompact = value => { compact = value === true; apply(); };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', apply, { once: true });
+  else apply();
 }
 
 /**
@@ -325,9 +415,21 @@ if (/pokeidle\.io$/.test(host)) {
     ipcRenderer.sendToHost('market', e.data.__pfMarket);
   });
 } else if (isChat) {
+  inject(compactChat);
   if (/twitch\.tv$/.test(host)) inject(twitchChat);
   // Clique na faixa (ex.: botão de pontos): avisa o app para abrir o chat inteiro e o modal aparecer
   document.addEventListener('pointerdown', () => ipcRenderer.sendToHost('chat-click'), true);
 } else if (host === 'player.kick.com' || host === 'www.twitch.tv') {
   inject(player);
+  if (host === 'www.twitch.tv') {
+    inject(compactChat);
+    inject(twitchLayout);
+    inject(twitchChat);
+    window.addEventListener('message', e => {
+      if (e.source === window && typeof e.data?.__pfTwitchChatReady === 'boolean') ipcRenderer.sendToHost('twitch-chat-ready', e.data.__pfTwitchChatReady);
+    });
+    document.addEventListener('pointerdown', e => {
+      if (document.documentElement.classList.contains('pf-twitch-shared') && e.target.closest('.chat-shell')) ipcRenderer.sendToHost('chat-click');
+    }, true);
+  }
 }

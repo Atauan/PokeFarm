@@ -18,6 +18,7 @@ Várias lives da **Kick** e da **Twitch** numa tela só, sem som, farmando ponto
 - **Carregamento gradual:** inicia as páginas das lives com intervalo de 1,5 segundo para distribuir o trabalho na abertura. O Pokeidle carrega imediatamente.
 - **Sem som por padrão:** cada bloco tem botão de som; "Silenciar todos" na barra.
 - **Faixa de pontos do chat:** cada bloco mostra só o rodapé do chat, com os pontos. Clicando nela, o chat abre inteiro para resgatar.
+- **Menos trabalho em segundo plano (Electron):** chats recolhidos deixam de desenhar a lista de mensagens, preservando o histórico e os controles de pontos. As páginas das lives também bloqueiam um iframe de sincronização de publicidade que pode abrir dezenas de páginas de rastreamento. Essas otimizações funcionam mesmo com os modos econômicos desligados.
 - **Qualidade configurável:** mínima (160p), 360p, 480p ou automática. A Twitch abre pela página do canal, exibe só o vídeo, aceita o aviso de conteúdo e tenta resgatar o bônus de pontos. A qualidade inicial é 160p; os modos econômicos têm comportamento próprio, descrito abaixo.
 - **Twitch econômica (Swift e Electron, experimental):** substitui os vídeos e chats individuais por um único chat compartilhado, sem renderizar as mensagens. Voltado a testar os bônus do Pokeidle com menos consumo; não garante Pontos do Canal da Twitch.
 - **Kick econômica (Swift e Electron):** usa a qualidade mínima e reduz mensagens e animações dos chats recolhidos, mantendo os vídeos, a faixa de pontos e os eventos de saldo e resgate.
@@ -171,6 +172,7 @@ O embed atual da Kick não oferece o antigo menu de qualidade. O app encontra a 
 
 ### Dicas para 24h
 
+- Na versão Electron, o modo normal da Twitch reaproveita o chat nativo da página da live, incluindo os pontos e a coleta de bônus. Quatro lives da Kick, quatro da Twitch e uma conta do jogo usam 13 páginas, em vez de 17. Abrir os pontos expande o chat com o vídeo acima, sem recarregar a live. Se o chat nativo não ficar disponível, o app abre o chat separado automaticamente. Os modos econômicos continuam opcionais; a RAM varia conforme os sites e o conteúdo.
 - Deixe o notebook na tomada. Fechar a tampa pode suspender o computador, e durante a suspensão o app não roda.
 - Bloquear a tela pode: as lives e o jogo continuam.
 - Se algo travar depois de muitas horas, o botão **⟳** do bloco (ou "Recarregar jogo") resolve sem fechar o app.

@@ -65,7 +65,7 @@ const PLAT = {
   },
   twitch: {
     title: 'Twitch', color: 'var(--twitch)', host: 'www.twitch.tv',
-    // Página completa do canal (o player embutido não conta pontos); o preload deixa só o vídeo
+    // Página completa: mantém o player e reaproveita o chat nativo do canal.
     player: (c) => `https://www.twitch.tv/${c}`,
     chat: (c) => `https://www.twitch.tv/popout/${c}/chat?popout=`,
   },
@@ -220,7 +220,7 @@ let zTop = 10;
 function createTile(p, item) {
   const P = PLAT[p];
   const id = item.id;
-  const t = { stalls: 0, rect: null };
+  const t = { stalls: 0, rect: null, sharedTwitch: p === 'twitch', chatFallbackTimer: null };
 
   t.muteBtn = el('button', { onclick: () => toggleMute(id) });
   const hdr = el('div', { class: 'hdr', 'data-drag': 'move', title: 'Arraste para mover o bloco' },
@@ -228,23 +228,30 @@ function createTile(p, item) {
     el('span', { class: 'name', text: item.channel }),
     el('span', { class: 'sp' }),
     t.muteBtn,
-    el('button', { title: 'Recarregar', 'aria-label': 'Recarregar', text: '⟳', onclick: () => { reloadWebview(t.player); reloadWebview(t.chat); } }),
+    el('button', { title: 'Recarregar', 'aria-label': 'Recarregar', text: '⟳', onclick: () => reloadTile(t) }),
     el('button', { title: 'Abrir no Edge', 'aria-label': 'Abrir no Edge', text: '🌐', onclick: () => window.pf.openEdge(`https://${P.host}/${item.channel}`) }),
     el('button', { title: 'Remover canal', 'aria-label': 'Remover canal', text: '✕', onclick: () => removeItem(id) }),
   );
 
   t.player = makeWebview(P.player(item.channel), {
     muted: item.muted,
-    onReady: (wv) => { applyMute(id); applyQuality(wv); },
+    onReady: (wv) => { applyMute(id); applyQuality(wv); applyChatMode(id); },
   });
-  t.chat = makeWebview(P.chat(item.channel), { muted: true, skeleton: 'chat', onReady: () => applyKickChat(id) });
-  t.chatBox = el('div', { class: 'chat' }, t.chat, t.chat.__skeleton);
-  t.chat.addEventListener('ipc-message', (e) => { if (e.channel === 'chat-click') expandChat(id); });
+  t.playerBox = el('div', { class: `player${t.sharedTwitch ? ' shared-twitch' : ''}` }, t.player, t.player.__skeleton);
+  if (t.sharedTwitch) {
+    t.chat = t.player;
+    t.chatBox = t.playerBox;
+    t.player.addEventListener('ipc-message', (e) => {
+      if (!t.sharedTwitch) return;
+      if (e.channel === 'chat-click') expandChat(id);
+      if (e.channel === 'twitch-chat-ready') checkTwitchChat(id, e.args[0] === true);
+    });
+  } else attachSeparateChat(id, t, P.chat(item.channel));
 
   t.root = el('div', { class: 'tile' },
     hdr,
-    el('div', { class: 'player' }, t.player, t.player.__skeleton),
-    t.chatBox,
+    t.playerBox,
+    t.sharedTwitch ? null : t.chatBox,
     el('div', { class: 'grip grip-r', 'data-drag': 'right', title: 'Arraste para mudar a largura' }),
     el('div', { class: 'grip grip-b', 'data-drag': 'bottom', title: 'Arraste para mudar a altura' }),
     el('div', { class: 'grip grip-c', 'data-drag': 'corner', title: 'Arraste para mudar largura e altura', text: '⤡' }),
@@ -254,6 +261,35 @@ function createTile(p, item) {
   tiles.set(id, t);
   applyMute(id);
   return t;
+}
+
+function reloadTile(t) {
+  for (const wv of new Set([t.player, t.chat])) reloadWebview(wv);
+}
+
+function attachSeparateChat(id, t, url) {
+  t.chat = makeWebview(url, { muted: true, skeleton: 'chat', onReady: () => applyChatMode(id) });
+  t.chatBox = el('div', { class: 'chat' }, t.chat, t.chat.__skeleton);
+  t.chat.addEventListener('ipc-message', e => { if (e.channel === 'chat-click') expandChat(id); });
+}
+
+function checkTwitchChat(id, ready) {
+  const t = tiles.get(id);
+  if (!t?.sharedTwitch) return;
+  if (ready) { clearTimeout(t.chatFallbackTimer); t.chatFallbackTimer = null; return; }
+  if (t.chatFallbackTimer !== null) return;
+  t.chatFallbackTimer = setTimeout(() => {
+    t.chatFallbackTimer = null;
+    if (tiles.get(id) !== t || !t.sharedTwitch) return;
+    const wasExpanded = expandedChat === id;
+    if (wasExpanded) collapseChat();
+    t.sharedTwitch = false;
+    t.playerBox.classList.remove('shared-twitch');
+    t.player.executeJavaScript('window.__pfSetTwitchLayout && window.__pfSetTwitchLayout({enabled:false})').catch(() => {});
+    attachSeparateChat(id, t, PLAT.twitch.chat(findItem(id).i.channel));
+    t.playerBox.after(t.chatBox);
+    if (wasExpanded) expandChat(id);
+  }, 30000);
 }
 
 function applyMute(id) {
@@ -276,11 +312,21 @@ function applyQuality(wv) {
   wv.executeJavaScript(`window.__kmApplyQuality && window.__kmApplyQuality(${quality})`).catch(() => {});
 }
 
-function applyKickChat(id) {
+function applyChatMode(id) {
   const t = tiles.get(id);
-  if (findItem(id)?.p !== 'kick' || !t?.chat.__ready) return;
-  const compact = S.kickEconomy && expandedChat !== id;
-  t.chat.executeJavaScript(`window.__pfSetKickEconomy && window.__pfSetKickEconomy(${compact})`).catch(() => {});
+  if (!t?.chat.__ready) return;
+  const compact = expandedChat !== id;
+  const kickEconomy = findItem(id)?.p === 'kick' && S.kickEconomy && compact;
+  if (t.sharedTwitch) {
+    t.player.executeJavaScript(`window.__pfSetTwitchLayout && window.__pfSetTwitchLayout(${JSON.stringify({
+      enabled: true, expanded: !compact, showChat: S.showChat,
+    })})`).then(ready => checkTwitchChat(id, ready === true)).catch(() => checkTwitchChat(id, false));
+    return;
+  }
+  t.chat.executeJavaScript(
+    `window.__pfSetChatCompact && window.__pfSetChatCompact(${compact});` +
+    `window.__pfSetKickEconomy && window.__pfSetKickEconomy(${kickEconomy});`,
+  ).catch(() => {});
 }
 
 function toggleMute(id) {
@@ -318,7 +364,7 @@ function expandChat(id) {
   expandedChat = id;
   t.root.style.zIndex = '9500';
   t.chatBox.classList.add('expanded');
-  applyKickChat(id);
+  applyChatMode(id);
   $('#chat-backdrop').hidden = false;
 }
 
@@ -330,7 +376,7 @@ function collapseChat() {
   $('#chat-backdrop').hidden = true;
   if (!t) return;
   t.chatBox.classList.remove('expanded');
-  applyKickChat(id);
+  applyChatMode(id);
   t.root.style.zIndex = String(++zTop);
 }
 
@@ -345,6 +391,7 @@ function syncTiles() {
     if (!visibleIds.has(id)) {
       if (expandedChat === id) collapseChat();
       if (drag?.id === id) { drag = null; $('#shield').hidden = true; }
+      clearTimeout(t.chatFallbackTimer);
       t.root.remove(); tiles.delete(id);
     }
   }
@@ -951,7 +998,7 @@ function setupBar() {
   const chatBtn = $('#chat-toggle');
   const paintChat = () => chatBtn.classList.toggle('on', S.showChat);
   paintChat();
-  chatBtn.addEventListener('click', () => { S.showChat = !S.showChat; persist(); paintChat(); layout(); });
+  chatBtn.addEventListener('click', () => { S.showChat = !S.showChat; persist(); paintChat(); layout(); tiles.forEach((_t, id) => applyChatMode(id)); });
 
   const quality = $('#quality');
   quality.value = String(S.quality);
@@ -971,7 +1018,7 @@ function setupBar() {
     tiles.forEach((_t, id) => applyMute(id));
   });
   $('#reload-all').addEventListener('click', () => {
-    tiles.forEach((t) => { reloadWebview(t.player); reloadWebview(t.chat); });
+    tiles.forEach(reloadTile);
     if (economyView) reloadWebview(economyView);
   });
   $('#twitch-economy').addEventListener('change', e => { S.twitchEconomy = e.target.checked; syncTiles(); });
@@ -981,7 +1028,7 @@ function setupBar() {
     $('#kick-economy-help').hidden = !S.kickEconomy;
     for (const [id, t] of tiles) {
       if (findItem(id)?.p !== 'kick') continue;
-      applyKickChat(id);
+      applyChatMode(id);
       if (!S.kickEconomy && !S.quality) reloadWebview(t.player);
       else applyQuality(t.player);
     }
