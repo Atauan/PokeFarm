@@ -732,6 +732,13 @@ final class Popups: NSObject, WKUIDelegate, NSWindowDelegate {
         let wv = makeWindow(configuration: Web.config(), title: "Entrar na \(p.title)")
         wv.load(URLRequest(url: p.loginURL))
     }
+
+    /// Login do Pokeidle de uma conta, numa janela própria (o Google recusa login dentro de WebView embutida).
+    func openGameLogin(_ account: GameAccount) {
+        let wv = makeWindow(configuration: Web.config(store: GameStore.dataStore(account)),
+                            title: "Entrar — \(account.name)")
+        wv.load(URLRequest(url: Game.url))
+    }
 }
 
 /// Espaça o início das páginas das lives e descarta carregamentos substituídos ou removidos.
@@ -2438,6 +2445,12 @@ struct ContentView: View {
                     .font(.caption).foregroundStyle(.orange)
             }
             Spacer()
+            Button {
+                if let a = account { Popups.shared.openGameLogin(a) }
+            } label: {
+                Label("Entrar", systemImage: "key.fill")
+            }
+            .help("Entrar nesta conta (abre janela de login; funciona com Google). Depois, Recarregar jogo.")
             Button { store.reloadGame(id) } label: {
                 Label("Recarregar jogo", systemImage: "arrow.clockwise")
             }

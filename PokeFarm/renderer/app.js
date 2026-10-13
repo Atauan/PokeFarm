@@ -991,6 +991,11 @@ function setupBar() {
     if (g) reloadWebview(g.wv);
   });
   $('#game-edge').addEventListener('click', () => window.pf.openEdge(GAME_URL));
+  $('#game-login').addEventListener('click', () => {
+    const a = currentAccount();
+    window.pf.openGameLogin(a.main ? null : accountPartition(a));
+    toast('Faça o login na janela que abriu. Depois clique em "Recarregar jogo".');
+  });
 
   $('#alerts-on').addEventListener('change', (e) => { M.enabled = e.target.checked; save('pf.alertsOn', M.enabled); });
   $('#poll').addEventListener('change', (e) => {

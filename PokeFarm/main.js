@@ -248,18 +248,45 @@ ipcMain.on('open-edge', (e, url) => {
   }
 });
 
-ipcMain.on('open-login', (e, platform) => {
+// Login numa janela própria (não numa webview): o Google recusa login dentro de webview embutida.
+// Aceita os pop-ups de OAuth (Google/Twitch/Kick) como janelas-filhas na mesma sessão.
+ipcMain.on('open-login', (e, platform, partition) => {
   const url = LOGIN_URLS[platform];
   if (!fromApp(e) || !url) return;
+  const part = ACCOUNT_PARTITION.test(partition || '') ? partition : PARTITION;
+  setupSession(part);
+  openLoginWindow(url, platform === 'twitch' ? 'Entrar na Twitch' : 'Entrar na Kick', part);
+});
+
+ipcMain.on('open-game-login', (e, partition) => {
+  if (!fromApp(e)) return;
+  const part = ACCOUNT_PARTITION.test(partition || '') ? partition : PARTITION;
+  setupSession(part);
+  openLoginWindow('https://pokeidle.io/app', 'Entrar no Pokeidle', part);
+});
+
+function openLoginWindow(url, title, part) {
   const w = new BrowserWindow({
-    width: 520,
-    height: 760,
-    title: platform === 'twitch' ? 'Entrar na Twitch' : 'Entrar na Kick',
-    autoHideMenuBar: true,
-    webPreferences: { partition: PARTITION, contextIsolation: true, sandbox: true, nodeIntegration: false },
+    width: 540, height: 760, title, autoHideMenuBar: true,
+    webPreferences: { partition: part, contextIsolation: true, sandbox: true, nodeIntegration: false },
+  });
+  // UA de navegador real (sem "Electron"); o Google bloqueia webview/apps embutidos
+  w.webContents.setUserAgent(CHROME_UA);
+  // Pop-up do OAuth (Google etc.): abre como janela-filha na MESMA sessão, não bloqueia
+  const childOpts = {
+    action: 'allow',
+    overrideBrowserWindowOptions: {
+      width: 540, height: 720, autoHideMenuBar: true,
+      webPreferences: { session: w.webContents.session, contextIsolation: true, sandbox: true, nodeIntegration: false },
+    },
+  };
+  w.webContents.setWindowOpenHandler(({ url: u }) => (/^https:\/\//.test(u) ? childOpts : { action: 'deny' }));
+  w.webContents.on('did-create-window', (child) => {
+    child.webContents.setUserAgent(CHROME_UA);
+    child.webContents.setWindowOpenHandler(({ url: u }) => (/^https:\/\//.test(u) ? childOpts : { action: 'deny' }));
   });
   w.loadURL(url);
-});
+}
 
 // Amostras brutas do mercado (ajudam a ajustar a leitura depois)
 ipcMain.on('write-sample', (e, msg) => {
