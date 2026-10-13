@@ -30,26 +30,25 @@ const S = {
   columns: load('pf.columns', 0),
   showChat: load('pf.showChat', true),
   quality: load('pf.quality', 160),   // altura máxima das lives (0 = automática)
+  autoLives: load('pf.autoLives', true) === true,
+  twitchEconomy: load('pf.twitchEconomy', false) === true,
+  kickEconomy: load('pf.kickEconomy', false) === true,
+  gameChannels: normalizeGameChannels(load('pf.gameChannels', [])),
+  ignoredGameChannels: load('pf.ignoredGameChannels', []),
+  livePoll: [30, 60, 120, 300].includes(load('pf.livePoll', 60)) ? load('pf.livePoll', 60) : 60,
   tab: load('pf.tab', 'lives'),
   frames: load('pf.frames', {}),      // id -> [x, y, largura, altura] em fração da área
-  official: load('pf.official', []),  // canais oficiais do Pokeidle ("twitch.tv/canal")
-  autoOfficial: load('pf.autoOfficial', true),
   target: 'kick',
 };
 function persist() {
   save('pf.kick', S.kick); save('pf.twitch', S.twitch); save('pf.columns', S.columns);
   save('pf.showChat', S.showChat); save('pf.quality', S.quality); save('pf.tab', S.tab); save('pf.frames', S.frames);
-  save('pf.official', S.official); save('pf.autoOfficial', S.autoOfficial);
+  save('pf.autoLives', S.autoLives); save('pf.livePoll', S.livePoll);
+  save('pf.twitchEconomy', S.twitchEconomy);
+  save('pf.kickEconomy', S.kickEconomy);
+  save('pf.gameChannels', S.gameChannels);
+  save('pf.ignoredGameChannels', S.ignoredGameChannels);
 }
-
-// ---------------- Ao vivo / automático ----------------
-
-const MAX_LIVE = 20;                 // lives carregadas ao mesmo tempo; o resto fica "na fila"
-const live = {};                     // "kick|canal" -> ao vivo? (sem entrada = trata como ao vivo)
-const dismissed = new Set();         // automáticos que você fechou nesta sessão
-const misses = {};
-const skey = (p, c) => `${p}|${c}`;
-const isLive = (e) => live[skey(e.p, e.i.channel)] !== false;
 
 const PLAT = {
   kick: {
@@ -67,23 +66,35 @@ const PLAT = {
 
 const all = () => [...S.kick.map((i) => ({ p: 'kick', i })), ...S.twitch.map((i) => ({ p: 'twitch', i }))];
 const findItem = (id) => all().find((e) => e.i.id === id);
-const liveCount = () => all().filter(isLive).length;
 
-/** Blocos que podem carregar: ao vivo e dentro do limite. */
-function activeIds() {
-  const s = new Set();
-  for (const e of all()) {
-    if (s.size >= MAX_LIVE) break;
-    if (isLive(e)) s.add(e.i.id);
+function normalizeGameChannels(rows) {
+  const channels = new Map();
+  if (!Array.isArray(rows)) return [];
+  for (const row of rows.slice(0, 200)) {
+    if (!row || !['kick', 'twitch'].includes(row.platform) || typeof row.channel !== 'string') continue;
+    const channel = row.channel.trim().toLowerCase();
+    if (!/^[a-z0-9_-]{2,40}$/.test(channel)) continue;
+    channels.set(`${row.platform}:${channel}`, { platform: row.platform, channel });
   }
-  return s;
+  return [...channels.values()];
 }
 
-function parseLink(l) {
-  const low = String(l).toLowerCase();
-  const p = low.includes('twitch.tv') ? 'twitch' : (low.includes('kick.com') ? 'kick' : null);
-  const c = p && cleanChannel(l);
-  return c ? { p, c } : null;
+function receiveGameChannels(rows) {
+  S.gameChannels = normalizeGameChannels([...S.gameChannels, ...normalizeGameChannels(rows)]);
+  importGameChannels();
+  if (manualDiscoveryPending && all().length) void checkLivesNow();
+}
+
+function importGameChannels() {
+  let added = 0;
+  const ignored = new Set(S.ignoredGameChannels);
+  for (const { platform, channel } of S.gameChannels) {
+    if (ignored.has(`${platform}:${channel}`) || S[platform].some(item => item.channel === channel)) continue;
+    S[platform].push({ id: uid(), channel, muted: true });
+    added++;
+  }
+  syncTiles();
+  if (added && S.autoLives && !liveRefreshing) scheduleLiveChecks();
 }
 
 /** Só letras, números, _ e - (o resto vira URL, então precisa ser seguro). */
@@ -101,16 +112,40 @@ function addChannels(text) {
     if (!c) continue;
     const low = raw.toLowerCase();
     const p = low.includes('twitch.tv') ? 'twitch' : (low.includes('kick.com') ? 'kick' : S.target);
+    S.ignoredGameChannels = S.ignoredGameChannels.filter(key => key !== `${p}:${c}`);
     if (!S[p].some((x) => x.channel === c)) S[p].push({ id: uid(), channel: c, muted: true });
+    if (!S.autoLives) {
+      const item = S[p].find(x => x.channel === c);
+      liveStates.set(item.id, nextLiveState(null, 'unknown', true));
+    }
   }
   persist();
   syncTiles();
+  scheduleLiveChecks();
 }
 
 // ---------------- WebViews ----------------
 
 // Erros de rede do Chromium (sem internet, conexão caiu, DNS, timeout...)
 const NET_ERRORS = new Set([-7, -21, -100, -101, -102, -103, -104, -105, -106, -109, -118, -130, -137]);
+
+// Espaça o início das páginas das lives; tarefas removidas não ocupam um intervalo.
+const loadQueue = [];
+let loadTimer = null;
+let lastPageLoad = -Infinity;
+function enqueueLoad(job) {
+  loadQueue.push(job);
+  pumpLoadQueue();
+}
+function pumpLoadQueue() {
+  if (loadTimer !== null || !loadQueue.length) return;
+  loadTimer = setTimeout(() => {
+    loadTimer = null;
+    const job = loadQueue.shift();
+    try { if (job()) lastPageLoad = performance.now(); } catch (_) { /* a página pode ter sido removida */ }
+    pumpLoadQueue();
+  }, Math.max(0, 1500 - (performance.now() - lastPageLoad)));
+}
 
 function makeWebview(src, opts = {}) {
   const wv = document.createElement('webview');
@@ -139,25 +174,18 @@ function makeWebview(src, opts = {}) {
   // Sem internet: tenta de novo em 30 s
   wv.addEventListener('did-fail-load', (e) => {
     if (!e.isMainFrame || !NET_ERRORS.has(e.errorCode)) return;
-    setTimeout(() => { try { wv.loadURL(e.validatedURL || wv.__pfSrc); } catch (_) { wv.src = wv.__pfSrc; } }, 30000);
+    setTimeout(() => {
+      if (!wv.isConnected) return;
+      try { wv.loadURL(e.validatedURL || wv.__pfSrc); } catch (_) { wv.src = wv.__pfSrc; }
+    }, 30000);
   });
   if (opts.now) wv.src = src;
-  else enqueueLoad(() => { if (wv.isConnected && !wv.getAttribute('src')) wv.src = src; });
+  else enqueueLoad(() => {
+    if (!wv.isConnected || wv.getAttribute('src')) return false;
+    wv.src = src;
+    return true;
+  });
   return wv;
-}
-
-// Abre as páginas uma de cada vez (1,5 s entre elas), em vez de todas juntas
-const loadQueue = [];
-let queueTimer = null;
-function enqueueLoad(fn) { loadQueue.push(fn); pumpQueue(); }
-function pumpQueue() {
-  if (queueTimer || !loadQueue.length) return;
-  queueTimer = setTimeout(() => {
-    queueTimer = null;
-    const fn = loadQueue.shift();
-    try { fn(); } catch (_) { /* ignora */ }
-    pumpQueue();
-  }, 1500);
 }
 
 /** Blocos cinza com brilho passando, no formato de cada tipo de página. */
@@ -173,7 +201,7 @@ function skeleton(style) {
 }
 
 function reloadWebview(wv) {
-  if (!wv || !wv.isConnected) return;
+  if (!wv.isConnected) return;
   try { wv.__ready ? wv.reload() : (wv.src = wv.__pfSrc); } catch (_) { wv.src = wv.__pfSrc; }
 }
 
@@ -185,25 +213,31 @@ let zTop = 10;
 function createTile(p, item) {
   const P = PLAT[p];
   const id = item.id;
-  const t = { p, id, stalls: 0, rect: null, active: null, player: null, chat: null, chatBox: null, points: null };
+  const t = { stalls: 0, rect: null };
 
   t.muteBtn = el('button', { onclick: () => toggleMute(id) });
-  t.dot = el('span', { class: 'dot' });
   const hdr = el('div', { class: 'hdr', 'data-drag': 'move', title: 'Arraste para mover o bloco' },
-    t.dot,
+    el('span', { class: 'dot', style: `background:${P.color}` }),
     el('span', { class: 'name', text: item.channel }),
-    item.auto ? el('span', { class: 'badge', text: 'OFICIAL', title: 'Canal oficial do Pokeidle, aberto sozinho. Sai quando a live acabar.' }) : null,
     el('span', { class: 'sp' }),
     t.muteBtn,
-    el('button', { title: 'Recarregar', 'aria-label': 'Recarregar', text: '⟳', onclick: () => reloadTile(t) }),
+    el('button', { title: 'Recarregar', 'aria-label': 'Recarregar', text: '⟳', onclick: () => { reloadWebview(t.player); reloadWebview(t.chat); } }),
     el('button', { title: 'Abrir no Edge', 'aria-label': 'Abrir no Edge', text: '🌐', onclick: () => window.pf.openEdge(`https://${P.host}/${item.channel}`) }),
-    el('button', { title: 'Fechar', 'aria-label': 'Fechar', text: '✕', onclick: () => removeItem(id) }),
+    el('button', { title: 'Remover canal', 'aria-label': 'Remover canal', text: '✕', onclick: () => removeItem(id) }),
   );
-  t.body = el('div', { class: 'body' });
+
+  t.player = makeWebview(P.player(item.channel), {
+    muted: item.muted,
+    onReady: (wv) => { applyMute(id); applyQuality(wv); },
+  });
+  t.chat = makeWebview(P.chat(item.channel), { muted: true, skeleton: 'chat', onReady: () => applyKickChat(id) });
+  t.chatBox = el('div', { class: 'chat' }, t.chat, t.chat.__skeleton);
+  t.chat.addEventListener('ipc-message', (e) => { if (e.channel === 'chat-click') expandChat(id); });
 
   t.root = el('div', { class: 'tile' },
     hdr,
-    t.body,
+    el('div', { class: 'player' }, t.player, t.player.__skeleton),
+    t.chatBox,
     el('div', { class: 'grip grip-r', 'data-drag': 'right', title: 'Arraste para mudar a largura' }),
     el('div', { class: 'grip grip-b', 'data-drag': 'bottom', title: 'Arraste para mudar a altura' }),
     el('div', { class: 'grip grip-c', 'data-drag': 'corner', title: 'Arraste para mudar largura e altura', text: '⤡' }),
@@ -211,83 +245,14 @@ function createTile(p, item) {
   t.root.addEventListener('pointerdown', (ev) => startDrag(ev, id));
   t.root.addEventListener('pointerdown', () => bringFront(id), true);
   tiles.set(id, t);
+  applyMute(id);
   return t;
-}
-
-function reloadTile(t) { reloadWebview(t.player); reloadWebview(t.chat); }
-
-/** Ao vivo e dentro do limite: abre player + chat. Senão: cartão leve, nenhuma página aberta. */
-function setActive(t, item, on) {
-  const P = PLAT[t.p];
-  const isOn = isLive({ p: t.p, i: item });
-  t.dot.style.background = isOn ? P.color : '#666';
-  if (!on) {
-    if (t.active !== false && expandedChat === t.id) collapseChat();
-    t.active = false;
-    t.player = null; t.chat = null; t.chatBox = null; t.points = null;
-    t.body.replaceChildren(el('div', { class: 'idle' },
-      el('div', { class: 'idle-icon', text: isOn ? '⏳' : '🌙' }),
-      el('strong', { text: isOn ? 'Na fila' : 'Offline' }),
-      el('span', { class: 'muted small', text: isOn ? `Limite de ${MAX_LIVE} lives abertas` : 'Abre sozinha quando entrar ao vivo' })));
-    return;
-  }
-  if (t.active === true) return;
-  t.active = true;
-  t.player = makeWebview(P.player(item.channel), {
-    muted: item.muted,
-    onReady: (wv) => { applyMute(t.id); applyQuality(wv); },
-  });
-  const playerBox = el('div', { class: 'player' }, t.player, t.player.__skeleton);
-  if (t.p === 'twitch') {
-    // Sem página de chat separada: o saldo vem da própria página do canal
-    t.points = el('span', { class: 'pts', text: 'Pontos: carregando…' });
-    t.player.addEventListener('ipc-message', (e) => {
-      if (e.channel === 'points' && t.points) t.points.textContent = `${String(e.args[0]).slice(0, 20)} pontos`;
-    });
-    t.chatBox = el('div', { class: 'chat strip' },
-      el('span', { class: 'seal', text: '◆' }), t.points, el('span', { class: 'sp' }),
-      el('button', { text: '💬 Chat', title: 'Abrir o chat inteiro (resgatar recompensas). O bônus já é resgatado sozinho.', onclick: () => openTwitchChat(t) }));
-    zoomRO.observe(playerBox);
-  } else {
-    t.chat = makeWebview(P.chat(item.channel), { muted: true, skeleton: 'chat' });
-    t.chat.addEventListener('ipc-message', (e) => { if (e.channel === 'chat-click') expandChat(t.id); });
-    t.chatBox = el('div', { class: 'chat' }, t.chat, t.chat.__skeleton);
-  }
-  t.body.replaceChildren(playerBox, t.chatBox);
-  applyMute(t.id);
-}
-
-// Twitch: a webview fica 1280 px de largura e é encolhida com CSS. Assim a página monta a coluna
-// do chat (pontos e bônus) atrás do vídeo, sem precisar de uma 2ª página só de chat.
-const TWITCH_W = 1280;
-const zoomRO = new ResizeObserver((entries) => entries.forEach((en) => fitTwitch(en.target)));
-function fitTwitch(box) {
-  const wv = box.querySelector('webview');
-  const w = box.clientWidth;
-  const h = box.clientHeight;
-  if (!wv || !w || !h) return;
-  const z = Math.max(0.25, Math.min(1, w / TWITCH_W));
-  Object.assign(wv.style, {
-    right: 'auto', bottom: 'auto', width: `${w / z}px`, height: `${h / z}px`,
-    transform: `scale(${z})`, transformOrigin: '0 0',
-  });
-}
-
-/** Chat da Twitch inteiro, só quando você pede; fecha junto com a janela. */
-function openTwitchChat(t) {
-  const e = findItem(t.id);
-  if (!e || !t.chatBox) return;
-  if (!t.chat) {
-    t.chat = makeWebview(PLAT.twitch.chat(e.i.channel), { muted: true, skeleton: 'chat', now: true });
-    t.chatBox.append(t.chat, t.chat.__skeleton);
-  }
-  expandChat(t.id);
 }
 
 function applyMute(id) {
   const t = tiles.get(id);
   const e = findItem(id);
-  if (!t || !e || !t.player) return;
+  if (!t || !e) return;
   const m = !!e.i.muted;
   t.muteBtn.textContent = m ? '🔇' : '🔊';
   t.muteBtn.title = m ? 'Ativar som' : 'Silenciar';
@@ -299,8 +264,16 @@ function applyMute(id) {
 }
 
 function applyQuality(wv) {
-  if (!wv || !wv.__ready) return;
-  wv.executeJavaScript(`window.__kmApplyQuality && window.__kmApplyQuality(${Number(S.quality) || 0})`).catch(() => {});
+  if (!wv.__ready) return;
+  const quality = S.kickEconomy && new URL(wv.__pfSrc).hostname === 'player.kick.com' ? 160 : Number(S.quality) || 0;
+  wv.executeJavaScript(`window.__kmApplyQuality && window.__kmApplyQuality(${quality})`).catch(() => {});
+}
+
+function applyKickChat(id) {
+  const t = tiles.get(id);
+  if (findItem(id)?.p !== 'kick' || !t?.chat.__ready) return;
+  const compact = S.kickEconomy && expandedChat !== id;
+  t.chat.executeJavaScript(`window.__pfSetKickEconomy && window.__pfSetKickEconomy(${compact})`).catch(() => {});
 }
 
 function toggleMute(id) {
@@ -312,8 +285,8 @@ function toggleMute(id) {
 }
 
 function removeItem(id) {
-  const e = findItem(id);
-  if (e && e.i.auto) dismissed.add(skey(e.p, e.i.channel));   // não volta sozinho nesta sessão
+  const entry = findItem(id);
+  if (entry) S.ignoredGameChannels = [...new Set([...S.ignoredGameChannels, `${entry.p}:${entry.i.channel}`])];
   S.kick = S.kick.filter((x) => x.id !== id);
   S.twitch = S.twitch.filter((x) => x.id !== id);
   persist();
@@ -334,110 +307,192 @@ function expandChat(id) {
   if (expandedChat === id) return;
   collapseChat();
   const t = tiles.get(id);
-  if (!t || !t.chatBox) return;
+  if (!t) return;
   expandedChat = id;
   t.root.style.zIndex = '9500';
   t.chatBox.classList.add('expanded');
+  applyKickChat(id);
   $('#chat-backdrop').hidden = false;
 }
 
 function collapseChat() {
   if (!expandedChat) return;
-  const t = tiles.get(expandedChat);
+  const id = expandedChat;
+  const t = tiles.get(id);
   expandedChat = null;
   $('#chat-backdrop').hidden = true;
-  if (!t || !t.chatBox) return;
+  if (!t) return;
   t.chatBox.classList.remove('expanded');
-  // Twitch: o chat só existe enquanto está aberto
-  if (t.p === 'twitch' && t.chat) { t.chat.__skeleton.remove(); t.chat.remove(); t.chat = null; }
+  applyKickChat(id);
   t.root.style.zIndex = String(++zTop);
 }
 
 function syncTiles() {
   const grid = $('#grid');
-  const ids = new Set(all().map((e) => e.i.id));
+  const saved = all();
+  const ids = new Set(saved.map((e) => e.i.id));
+  const open = saved.filter((e) => liveStates.get(e.i.id)?.open);
+  const visible = open.filter(e => !(S.twitchEconomy && e.p === 'twitch'));
+  const visibleIds = new Set(visible.map((e) => e.i.id));
   for (const [id, t] of tiles) {
-    if (!ids.has(id)) {
+    if (!visibleIds.has(id)) {
       if (expandedChat === id) collapseChat();
-      t.root.remove(); tiles.delete(id); delete S.frames[id];
+      if (drag?.id === id) { drag = null; $('#shield').hidden = true; }
+      t.root.remove(); tiles.delete(id);
     }
   }
-  for (const e of all()) if (!tiles.has(e.i.id)) grid.append(createTile(e.p, e.i).root);
-  const act = activeIds();
-  for (const e of all()) setActive(tiles.get(e.i.id), e.i, act.has(e.i.id));
+  // Fechar por estar offline preserva o tamanho/posição. Remover o canal apaga ambos.
+  for (const id of Object.keys(S.frames)) if (!ids.has(id)) delete S.frames[id];
+  for (const id of liveStates.keys()) if (!ids.has(id)) liveStates.delete(id);
+  for (const e of visible) if (!tiles.has(e.i.id)) grid.append(createTile(e.p, e.i).root);
+  syncTwitchEconomy(open.filter(e => e.p === 'twitch').map(e => e.i.channel));
   persist();
   layout();
-  paintLiveInfo();
+  renderLiveControls();
 }
 
-function paintLiveInfo() {
-  const c = $('#live-count');
-  if (c) c.textContent = `${liveCount()}/${MAX_LIVE}`;
-  const b = $('#auto-toggle');
-  if (!b) return;
-  b.classList.toggle('on', !!S.autoOfficial);
-  b.title = S.official.length
-    ? `Abrir sozinho os ${S.official.length} canais oficiais do Pokeidle quando entrarem ao vivo`
-    : 'Abrir sozinho os canais oficiais do Pokeidle quando entrarem ao vivo. Abra o "Bônus Twitch" no jogo uma vez para o app aprender a lista.';
-}
+// ---------------- Monitoramento online/offline ----------------
 
-/** A cada 2 min: quem está ao vivo (seus canais + oficiais). Oficiais entram/saem sozinhos. */
-async function checkLive() {
-  const tw = new Set(S.twitch.map((x) => x.channel));
-  const kk = new Set(S.kick.map((x) => x.channel));
-  if (S.autoOfficial) {
-    for (const l of S.official) { const r = parseLink(l); if (r) (r.p === 'twitch' ? tw : kk).add(r.c); }
+// Uma única página substitui todos os vídeos e chats individuais da Twitch.
+let economyView = null;
+let economyURL = '';
+function syncTwitchEconomy(channels) {
+  const names = [...new Set(channels.filter(name => /^[a-z0-9_]{1,25}$/.test(name)))].sort();
+  const selected = names.slice(0, 100);
+  const url = S.twitchEconomy && selected.length
+    ? `https://www.twitch.tv/popout/${selected[0]}/chat?pf-economy=1&pf-channels=${encodeURIComponent(selected.join(','))}` : '';
+  $('#twitch-economy').checked = S.twitchEconomy;
+  $('#kick-economy').checked = S.kickEconomy;
+  $('#kick-economy-help').hidden = !S.kickEconomy;
+  $('#twitch-economy-help').hidden = !S.twitchEconomy;
+  $('#twitch-economy-reload').hidden = !url;
+  $('#twitch-economy-status').dataset.total = String(names.length);
+  if (url === economyURL) {
+    if (!url) $('#twitch-economy-status').textContent = S.twitchEconomy ? 'Aguardando canais online' : '';
+    return;
   }
-  let res;
-  try { res = await window.pf.checkLive({ twitch: [...tw], kick: [...kk] }); } catch (_) { return; }
-  if (!res) return;
-  const official = new Set(S.official.map(parseLink).filter(Boolean).map((r) => skey(r.p, r.c)));
-  let changed = false;
-  for (const p of ['twitch', 'kick']) {
-    for (const [c, on] of Object.entries(res[p] || {})) {
-      if (cleanChannel(c) !== c) continue;
-      const k = skey(p, c);
-      if (live[k] !== !!on) { live[k] = !!on; changed = true; }
-      const item = S[p].find((x) => x.channel === c);
-      if (on) {
-        misses[k] = 0;
-        if (!item && S.autoOfficial && official.has(k) && !dismissed.has(k) && liveCount() < MAX_LIVE) {
-          S[p].push({ id: uid(), channel: c, muted: true, auto: true });
-          changed = true;
-          toast(`✓ ${c} (${PLAT[p].title}) entrou ao vivo e foi adicionado`);
-        }
-      } else if (item && item.auto) {
-        // 2 checagens seguidas offline (evita sair numa queda rápida)
-        misses[k] = (misses[k] || 0) + 1;
-        if (misses[k] >= 2) { misses[k] = 0; S[p] = S[p].filter((x) => x !== item); changed = true; }
+  economyView?.remove(); economyView = null; economyURL = url;
+  $('#twitch-economy-status').textContent = !S.twitchEconomy ? '' : !url ? 'Aguardando canais online' : 'Conectando ao chat…';
+  if (!url) return;
+  economyView = makeWebview(url, { muted: true });
+  economyView.classList.add('twitch-economy-session');
+  economyView.setAttribute('aria-hidden', 'true');
+  document.body.append(economyView);
+}
+setInterval(async () => {
+  const view = economyView;
+  if (!view?.__ready || !view.isConnected) return;
+  try {
+    const state = await view.executeJavaScript('window.__pfTwitchEconomy || null');
+    if (view !== economyView) return;
+    const total = Number($('#twitch-economy-status').dataset.total);
+    const limit = total > 100 ? ` · limite: 100 de ${total} canais` : '';
+    $('#twitch-economy-status').textContent = !state?.connected ? 'Aguardando conexão com o chat…'
+      : !state.authenticated ? 'Sem login — entre na Twitch e clique em Reconectar Twitch'
+      : `${state.joined}/${state.requested} chats conectados · sem vídeo${limit}`;
+  } catch (_) { /* a página pode estar recarregando */ }
+}, 2000);
+
+const liveStates = new Map();
+let liveTimer = null;
+let liveChecking = false;
+let liveRefreshing = false;
+let manualDiscoveryPending = false;
+let liveGeneration = 0;
+
+function scheduleLiveChecks() {
+  clearTimeout(liveTimer);
+  liveTimer = null;
+  liveGeneration++;
+  // A consulta atual termina antes da próxima; a geração descarta respostas antigas.
+  if (S.autoLives && all().length && !liveChecking) liveTimer = setTimeout(checkLives, 0);
+}
+
+async function checkLivesNow() {
+  if (liveChecking || liveRefreshing) return;
+  liveRefreshing = true;
+  manualDiscoveryPending = false;
+  clearTimeout(liveTimer); liveTimer = null;
+  renderLiveControls();
+  try {
+    if (game?.__ready) {
+      const rows = await game.executeJavaScript('window.__pfReadGameChannels ? window.__pfReadGameChannels() : []');
+      S.gameChannels = normalizeGameChannels([...S.gameChannels, ...normalizeGameChannels(rows)]);
+    }
+  } catch (_) { /* usa os canais já conhecidos se o jogo estiver recarregando */ }
+  S.ignoredGameChannels = [];
+  importGameChannels();
+  liveRefreshing = false;
+  if (!all().length) {
+    manualDiscoveryPending = true;
+    renderLiveControls();
+    return;
+  }
+  await checkLives(true);
+}
+
+async function checkLives(manual = false) {
+  clearTimeout(liveTimer);
+  liveTimer = null;
+  if ((!S.autoLives && !manual) || liveChecking || liveRefreshing || !all().length) return;
+  liveChecking = true;
+  const generation = liveGeneration;
+  renderLiveControls();
+  try {
+    const items = all();
+    const jobs = [];
+    for (const p of ['kick', 'twitch']) {
+      const platformItems = items.filter(item => item.p === p);
+      const size = p === 'twitch' ? 30 : 1;
+      for (let offset = 0; offset < platformItems.length; offset += size) {
+        jobs.push({ p, items: platformItems.slice(offset, offset + size) });
       }
     }
+    // Até quatro requisições em paralelo; cada consulta Twitch agrupa até 30 canais.
+    for (let offset = 0; offset < jobs.length; offset += 4) {
+      if (generation !== liveGeneration || (!S.autoLives && !manual)) break;
+      await Promise.all(jobs.slice(offset, offset + 4).map(async ({ p, items: batch }) => {
+        let statuses = {};
+        try { statuses = await window.pf.liveStatus(p, batch.map(({ i }) => i.channel)); } catch (_) { /* mantém estado */ }
+        if (generation !== liveGeneration || (!S.autoLives && !manual)) return;
+        for (const { i } of batch) {
+          if (!findItem(i.id)) continue;
+          liveStates.set(i.id, nextLiveState(liveStates.get(i.id), statuses?.[i.channel], liveStates.get(i.id)?.open === true));
+        }
+      }));
+      syncTiles();
+    }
+  } finally {
+    liveChecking = false;
+    renderLiveControls();
+    if (S.autoLives && all().length) {
+      liveTimer = setTimeout(checkLives, generation === liveGeneration ? S.livePoll * 1000 : 0);
+    }
   }
-  if (changed) syncTiles();
 }
 
-function mergeOfficial(links) {
-  let novo = false;
-  for (const l of links.slice(0, 100)) {
-    const r = parseLink(l);
-    if (!r) continue;
-    const n = `${r.p === 'twitch' ? 'twitch.tv' : 'kick.com'}/${r.c}`;
-    if (!S.official.includes(n)) { S.official.push(n); novo = true; }
+function renderLiveControls() {
+  const items = all();
+  $('#auto-lives').checked = S.autoLives;
+  $('#live-poll').value = String(S.livePoll);
+  $('#check-lives').disabled = liveChecking || liveRefreshing;
+  const unknown = items.filter(({ i }) => liveStates.get(i.id)?.status === 'unknown').length;
+  const count = items.filter(e => liveStates.get(e.i.id)?.open).length;
+  $('#live-summary').textContent = liveChecking || liveRefreshing ? 'Verificando canais…'
+    : manualDiscoveryPending ? 'Abra o Pokeidle para carregar os canais'
+      : `${S.autoLives ? '' : 'Automático desligado · '}${count} abertas${unknown ? ` · ${unknown} sem confirmação` : ''}`;
+  $('#empty-title').textContent = items.length ? 'Nenhuma live aberta no momento'
+    : 'Entre no Pokeidle para carregar os canais';
+  $('#empty-detail').textContent = !items.length
+    ? 'Os canais oficiais são reconhecidos pelo jogo. Use Verificar agora para abrir os online.'
+    : unknown ? 'Não foi possível verificar alguns canais. Use Verificar agora para tentar novamente.'
+      : S.autoLives ? 'As lives abrirão automaticamente quando os canais estiverem online.'
+        : 'Clique em Verificar agora para trazer os canais online à tela.';
+  if (economyView && !tiles.size) {
+    $('#empty-title').textContent = 'Twitch em modo econômico';
+    $('#empty-detail').textContent = 'Os canais usam o chat compartilhado. Acompanhe a conexão acima e os bônus na aba Pokeidle.';
   }
-  if (!novo) return;
-  S.official = S.official.slice(0, 100);
-  persist();
-  paintLiveInfo();
-  checkLive();
 }
-
-setTimeout(checkLive, 2000);
-setInterval(checkLive, 120000);
-
-// Páginas abertas por muitas horas acumulam memória: recarrega uma por vez a cada 6 h
-setInterval(() => {
-  [...tiles.values()].forEach((t, i) => setTimeout(() => reloadTile(t), i * 20000));
-}, 6 * 3600 * 1000);
 
 /** Nº de colunas que deixa os vídeos maiores (16:9). */
 function autoColumns(n, W, H, chrome) {
@@ -459,7 +514,7 @@ function autoColumns(n, W, H, chrome) {
 function layout() {
   const grid = $('#grid');
   grid.classList.toggle('nochat', !S.showChat);
-  const items = all();
+  const items = all().filter((e) => tiles.has(e.i.id));
   $('#empty').hidden = items.length > 0;
   const W = grid.clientWidth;
   const H = grid.clientHeight;
@@ -536,7 +591,7 @@ new ResizeObserver(() => layout()).observe($('#grid'));
 // Vigia: se o vídeo de uma live ficar ~3 min parado ou travado, recarrega
 setInterval(() => {
   for (const t of tiles.values()) {
-    if (!t.player || !t.player.__ready) continue;
+    if (!t.player.__ready) continue;
     t.player.executeJavaScript(
       // Tocando de verdade = não pausado E o tempo do vídeo andou desde a última checagem
       '(function(){var v=document.querySelector("video");if(!v||v.paused||v.readyState<2)return false;' +
@@ -561,7 +616,14 @@ function setupGame() {
     skeleton: 'game',
     onReady: (wv) => wv.executeJavaScript(`window.__pfPoll = ${Number(M.poll) || 60}`).catch(() => {}),
   });
-  game.addEventListener('ipc-message', (e) => { if (e.channel === 'market') onMarket(e.args[0]); });
+  game.addEventListener('ipc-message', (e) => {
+    if (e.channel === 'market') onMarket(e.args[0]);
+    if (e.channel === 'game-channels') {
+      try {
+        if (/(^|\.)pokeidle\.io$/.test(new URL(game.getURL()).hostname)) receiveGameChannels(e.args[0]);
+      } catch (_) { /* a página já foi fechada/navegou */ }
+    }
+  });
   $('#panel-game').append(game, game.__skeleton);
 }
 
@@ -633,7 +695,6 @@ function matches(r, item, avg) {
 
 function onMarket(msg) {
   if (!msg || typeof msg !== 'object') return;
-  if (Array.isArray(msg.official)) { mergeOfficial(msg.official.map(String)); return; }
   const url = typeof msg.url === 'string' ? msg.url.slice(0, 500) : 'dom';
   if (url !== 'dom' && typeof msg.sample === 'string') {
     const n = M.samples[url] || 0;
@@ -761,11 +822,22 @@ function setTarget(p) {
 }
 
 function setupBar() {
+  $('#auto-lives').addEventListener('change', (e) => {
+    S.autoLives = e.target.checked;
+    // A chave controla o monitoramento, sem abrir canais offline nem fechar a tela atual.
+    if (S.autoLives) liveStates.forEach((state, id) => liveStates.set(id, nextLiveState(null, 'unknown', state.open)));
+    persist(); syncTiles(); scheduleLiveChecks();
+  });
+  $('#live-poll').addEventListener('change', (e) => {
+    S.livePoll = Number(e.target.value) || 60;
+    persist(); scheduleLiveChecks();
+  });
+  $('#check-lives').addEventListener('click', () => { void checkLivesNow(); });
   $$('#tabs button').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
   $$('#target button').forEach((b) => b.addEventListener('click', () => setTarget(b.dataset.target)));
 
   const input = $('#channel-input');
-  const add = () => { addChannels(input.value); input.value = ''; checkLive(); };
+  const add = () => { addChannels(input.value); input.value = ''; };
   $('#add-btn').addEventListener('click', add);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
 
@@ -788,7 +860,6 @@ function setupBar() {
     S.quality = Number(quality.value) || 0;
     persist();
     tiles.forEach((t) => {
-      if (!t.player) return;
       // Kick no automático: recarrega para o player voltar a escolher sozinho
       if (!S.quality && /player\.kick\.com/.test(t.player.__pfSrc)) reloadWebview(t.player);
       else applyQuality(t.player);
@@ -800,23 +871,29 @@ function setupBar() {
     persist();
     tiles.forEach((_t, id) => applyMute(id));
   });
-  $('#reload-all').addEventListener('click', () => { tiles.forEach(reloadTile); checkLive(); });
-
-  $('#auto-toggle').addEventListener('click', () => {
-    S.autoOfficial = !S.autoOfficial;
-    persist();
-    paintLiveInfo();
-    checkLive();
+  $('#reload-all').addEventListener('click', () => {
+    tiles.forEach((t) => { reloadWebview(t.player); reloadWebview(t.chat); });
+    if (economyView) reloadWebview(economyView);
   });
+  $('#twitch-economy').addEventListener('change', e => { S.twitchEconomy = e.target.checked; syncTiles(); });
+  $('#kick-economy').addEventListener('change', e => {
+    S.kickEconomy = e.target.checked;
+    persist();
+    $('#kick-economy-help').hidden = !S.kickEconomy;
+    for (const [id, t] of tiles) {
+      if (findItem(id)?.p !== 'kick') continue;
+      applyKickChat(id);
+      if (!S.kickEconomy && !S.quality) reloadWebview(t.player);
+      else applyQuality(t.player);
+    }
+  });
+  $('#twitch-economy-reload').addEventListener('click', () => { if (economyView) reloadWebview(economyView); });
 
   $$('[data-login]').forEach((b) => b.addEventListener('click', () => window.pf.openLogin(b.dataset.login)));
   $$('[data-clear]').forEach((b) => b.addEventListener('click', () => {
     const w = b.dataset.clear;
-    if (w === 'official') { S.official = []; persist(); paintLiveInfo(); return; }
-    // Automáticos limpos não voltam sozinhos nesta sessão
-    all().forEach((e) => {
-      if (e.i.auto && (w === 'all' || w === e.p)) dismissed.add(skey(e.p, e.i.channel));
-    });
+    const removed = all().filter(e => w === 'all' || e.p === w).map(e => `${e.p}:${e.i.channel}`);
+    S.ignoredGameChannels = [...new Set([...S.ignoredGameChannels, ...removed])];
     if (w === 'kick' || w === 'all') S.kick = [];
     if (w === 'twitch' || w === 'all') S.twitch = [];
     syncTiles();
@@ -871,7 +948,6 @@ function addFromGame(link) {
   const plat = link.includes('twitch.tv') ? 'Twitch' : 'Kick';
   const before = all().length;
   addChannels(link);
-  if (all().length > before) checkLive();
   toast(all().length > before ? `✓ ${name} (${plat}) adicionado às Lives` : `${name} já está nas Lives`);
 }
 
@@ -880,6 +956,7 @@ function addFromGame(link) {
 setupBar();
 setTarget('kick');
 setupGame();
-syncTiles();
+importGameChannels();
+scheduleLiveChecks();
 setTab(S.tab);
 renderAlerts();

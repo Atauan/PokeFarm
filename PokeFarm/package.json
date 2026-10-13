@@ -27,6 +27,10 @@
     },
     "files": [
       "main.js",
+      "live-status.js",
+      "game-channels.js",
+      "twitch-economy.js",
+      "kick-economy.js",
       "preload.js",
       "webview-preload.js",
       "renderer/**",

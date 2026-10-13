@@ -55,8 +55,6 @@ struct StreamItem: Identifiable, Codable, Equatable {
     var channel: String
     var muted = true
     var reloadToken = 0
-    /// Adicionado sozinho (canal oficial do Pokeidle ao vivo); sai quando a live acaba
-    var auto: Bool? = nil
 }
 
 /// Item da grade (plataforma + canal)
@@ -66,9 +64,10 @@ struct Entry: Identifiable {
     var id: UUID { item.id }
 }
 
+@MainActor
 final class Store: ObservableObject {
-    @Published var kick: [StreamItem] = [] { didSet { save(kick, "streams.v1") } }
-    @Published var twitch: [StreamItem] = [] { didSet { save(twitch, "twitch.v1") } }
+    @Published var kick: [StreamItem] = [] { didSet { save(kick, "streams.v1"); configureLiveMonitoring() } }
+    @Published var twitch: [StreamItem] = [] { didSet { save(twitch, "twitch.v1"); configureLiveMonitoring() } }
     @Published var columns: Int = UserDefaults.standard.integer(forKey: "columns") {
         didSet { UserDefaults.standard.set(columns, forKey: "columns") }
     }
@@ -104,97 +103,126 @@ final class Store: ObservableObject {
         didSet { UserDefaults.standard.set(tab.rawValue, forKey: "tab") }
     }
     @Published var gameReload = 0
-
-    // MARK: Lives ao vivo / automáticas
-
-    /// Máximo de lives carregadas ao mesmo tempo (as outras ficam "na fila", sem gastar nada)
-    static let maxLive = 20
-    static weak var current: Store?
-
-    /// "kick|canal" -> está ao vivo? (sem entrada = ainda não checado, trata como ao vivo)
-    @Published var liveStatus: [String: Bool] = [:]
-    /// Canais oficiais do Pokeidle aprendidos do jogo ("twitch.tv/canal")
-    @Published var officialChannels: [String] = UserDefaults.standard.stringArray(forKey: "officialChannels") ?? [] {
-        didSet { UserDefaults.standard.set(officialChannels, forKey: "officialChannels") }
+    @Published var twitchEconomy: Bool = UserDefaults.standard.bool(forKey: "twitchEconomy") {
+        didSet { UserDefaults.standard.set(twitchEconomy, forKey: "twitchEconomy") }
     }
-    /// Abrir sozinho os canais oficiais quando entram ao vivo
-    @Published var autoOfficial: Bool = UserDefaults.standard.object(forKey: "autoOfficial") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(autoOfficial, forKey: "autoOfficial") }
+    @Published var economyReload = 0
+    @Published var kickEconomy: Bool = UserDefaults.standard.bool(forKey: "kickEconomy") {
+        didSet { UserDefaults.standard.set(kickEconomy, forKey: "kickEconomy") }
     }
-    /// Automáticos que você fechou nesta sessão: não voltam sozinhos
-    private var dismissedAuto = Set<String>()
-    private var refreshTimer: Timer?
-
-    static func statusKey(_ p: Platform, _ c: String) -> String { "\(p.rawValue)|\(c)" }
-
-    static func parseLink(_ link: String) -> (Platform, String)? {
-        let low = link.lowercased()
-        let p: Platform
-        if low.contains("twitch.tv") { p = .twitch } else if low.contains("kick.com") { p = .kick } else { return nil }
-        guard let c = clean(link) else { return nil }
-        return (p, c)
+    @Published private var liveRefreshing = false
+    @Published private var manualDiscoveryPending = false
+    @Published private(set) var gameImport: GameChannelImport = {
+        guard let data = UserDefaults.standard.data(forKey: "gameChannelImport"),
+              let saved = try? JSONDecoder().decode(GameChannelImport.self, from: data) else { return GameChannelImport() }
+        return saved
+    }()
+    @Published var autoLives: Bool = UserDefaults.standard.object(forKey: "autoLives") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(autoLives, forKey: "autoLives"); configureLiveMonitoring() }
     }
-
-    func isLive(_ e: Entry) -> Bool { liveStatus[Self.statusKey(e.platform, e.item.channel)] ?? true }
-    var liveCount: Int { all.filter(isLive).count }
-
-    /// Blocos que podem carregar: ao vivo e dentro do limite
-    var activeIDs: Set<UUID> {
-        var s = Set<UUID>()
-        for e in all where isLive(e) {
-            if s.count >= Self.maxLive { break }
-            s.insert(e.id)
-        }
-        return s
+    @Published var livePoll: Int = {
+        let saved = UserDefaults.standard.object(forKey: "livePoll") as? Int ?? 60
+        return [30, 60, 120, 300].contains(saved) ? saved : 60
+    }() {
+        didSet { UserDefaults.standard.set(livePoll, forKey: "livePoll"); configureLiveMonitoring() }
     }
-
-    @discardableResult
-    func addAuto(_ p: Platform, _ c: String) -> Bool {
-        guard !dismissedAuto.contains(Self.statusKey(p, c)), !list(p).contains(where: { $0.channel == c }) else { return false }
-        var it = StreamItem(channel: c)
-        it.auto = true
-        set(p, list(p) + [it])
-        return true
-    }
-
-    /// Saída automática (live acabou): não marca como "fechado por você"
-    func removeAuto(_ id: UUID, _ p: Platform) { set(p, list(p).filter { $0.id != id }) }
-
-    func mergeOfficial(_ links: [String]) {
-        var cur = officialChannels
-        for l in links {
-            guard let (p, c) = Self.parseLink(l) else { continue }
-            let n = "\(p.host)/\(c)"
-            if !cur.contains(n) { cur.append(n) }
-        }
-        if cur != officialChannels { officialChannels = Array(cur.prefix(100)) }
-    }
-
-    /// Páginas abertas por muitas horas acumulam memória: recarrega uma por vez a cada 6 h
-    private func startAutoRefresh() {
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
-            self?.staggeredReload()
-        }
-        refreshTimer?.tolerance = 60
-    }
-
-    func staggeredReload() {
-        for (i, e) in all.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 20) { [weak self] in
-                self?.update(e.id, e.platform) { $0.reloadToken += 1 }
-            }
-        }
-    }
+    private let liveMonitor = LiveMonitor(checker: LiveStatusService(userAgent: Web.userAgent))
 
     init() {
         kick = Store.load("streams.v1")
         twitch = Store.load("twitch.v1")
-        Store.current = self
-        startAutoRefresh()
+        liveMonitor.onChange = { [weak self] in self?.objectWillChange.send() }
+        importGameChannels()
+        configureLiveMonitoring()
     }
 
     var all: [Entry] {
         kick.map { Entry(platform: .kick, item: $0) } + twitch.map { Entry(platform: .twitch, item: $0) }
+    }
+
+    var visibleEntries: [Entry] {
+        let open = liveMonitor.openIDs
+        return all.filter { open.contains($0.id) }
+    }
+    var liveChecking: Bool { liveMonitor.isChecking || liveRefreshing }
+    var videoEntries: [Entry] { visibleEntries.filter { !twitchEconomy || $0.platform != .twitch } }
+    var economyPlan: TwitchEconomyPlan {
+        TwitchEconomyPlan(channels: visibleEntries.filter { $0.platform == .twitch }.map { $0.item.channel })
+    }
+    var unknownLives: Int { liveMonitor.states.values.filter { $0.status == .unknown }.count }
+    var liveSummary: String {
+        if liveChecking { return "Verificando canais…" }
+        if manualDiscoveryPending { return "Abra o Pokeidle para carregar os canais" }
+        let uncertain = unknownLives > 0 ? " · \(unknownLives) sem confirmação" : ""
+        return "\(autoLives ? "" : "Automático desligado · ")\(visibleEntries.count) abertas\(uncertain)"
+    }
+
+    func checkLivesNow() {
+        guard !liveChecking else { return }
+        liveRefreshing = true
+        manualDiscoveryPending = false
+        gameImport.restoreIgnored()
+        saveGameImport()
+        let finish: ([[String: Any]]) -> Void = { [weak self] rows in
+            guard let self else { return }
+            let channels = rows.prefix(200).compactMap { row -> GameChannel? in
+                guard let platform = row["platform"] as? String, let channel = row["channel"] as? String else { return nil }
+                return GameChannel(platform: platform, channel: channel)
+            }
+            self.receiveGameChannels(channels)
+            self.liveRefreshing = false
+            self.manualDiscoveryPending = self.all.isEmpty
+            self.liveMonitor.checkNow(manual: true)
+        }
+        if let game = MarketWatcher.shared.gameWebView {
+            game.evaluateJavaScript("window.__pfReadGameChannels ? window.__pfReadGameChannels() : []") { value, _ in
+                DispatchQueue.main.async { finish(value as? [[String: Any]] ?? []) }
+            }
+        } else { finish([]) }
+    }
+
+    func receiveGameChannels(_ channels: [GameChannel]) {
+        gameImport.discover(channels)
+        saveGameImport()
+        importGameChannels()
+        if manualDiscoveryPending && !all.isEmpty { checkLivesNow() }
+    }
+
+    private func saveGameImport() {
+        if let data = try? JSONEncoder().encode(gameImport) { UserDefaults.standard.set(data, forKey: "gameChannelImport") }
+    }
+
+    private func importGameChannels() {
+        var nextKick = kick, nextTwitch = twitch
+        for channel in gameImport.candidates {
+            if channel.platform == "kick" {
+                if !nextKick.contains(where: { $0.channel == channel.channel }) { nextKick.append(StreamItem(channel: channel.channel)) }
+            } else {
+                if !nextTwitch.contains(where: { $0.channel == channel.channel }) { nextTwitch.append(StreamItem(channel: channel.channel)) }
+            }
+        }
+        if nextKick != kick { kick = nextKick }
+        if nextTwitch != twitch { twitch = nextTwitch }
+    }
+
+    private func ignoreGameChannel(_ channel: String, _ platform: Platform) {
+        if let channel = GameChannel(platform: platform.rawValue, channel: channel) {
+            gameImport.ignore(channel)
+            saveGameImport()
+        }
+    }
+
+    private func configureLiveMonitoring() {
+        let channels = all.map { MonitoredChannel(id: $0.id, platform: $0.platform.rawValue, channel: $0.item.channel) }
+        liveMonitor.configure(channels: channels, enabled: autoLives, interval: livePoll)
+    }
+
+    private func pruneRemovedLayouts() {
+        let savedIDs = Set(all.map { $0.id.uuidString })
+        freeFrames = freeFrames.filter { savedIDs.contains($0.key) }
+        tileWeights = tileWeights.filter { savedIDs.contains($0.key) }
+        if let frontTile, !savedIDs.contains(frontTile) { self.frontTile = nil }
+        saveSizes()
     }
 
     private static func load(_ key: String) -> [StreamItem] {
@@ -215,7 +243,7 @@ final class Store: ObservableObject {
         if p == .kick { kick = items } else { twitch = items }
     }
 
-    static func clean(_ raw: String) -> String? {
+    nonisolated static func clean(_ raw: String) -> String? {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !s.isEmpty else { return nil }
         if let q = s.firstIndex(where: { $0 == "?" || $0 == "#" }) { s = String(s[..<q]) }
@@ -233,11 +261,16 @@ final class Store: ObservableObject {
             guard let c = Store.clean(raw) else { continue }
             let low = raw.lowercased()
             let p: Platform = low.contains("twitch.tv") ? .twitch : (low.contains("kick.com") ? .kick : def)
+            if let channel = GameChannel(platform: p.rawValue, channel: c) {
+                gameImport.allow(channel)
+                saveGameImport()
+            }
             var items = list(p)
             if !items.contains(where: { $0.channel == c }) {
                 items.append(StreamItem(channel: c))
                 set(p, items)
             }
+            if !autoLives, let item = items.first(where: { $0.channel == c }) { liveMonitor.openManually(item.id) }
         }
     }
 
@@ -249,10 +282,9 @@ final class Store: ObservableObject {
     }
 
     func remove(_ id: UUID, _ p: Platform) {
-        if let it = list(p).first(where: { $0.id == id }), it.auto == true {
-            dismissedAuto.insert(Self.statusKey(p, it.channel))
-        }
+        if let item = list(p).first(where: { $0.id == id }) { ignoreGameChannel(item.channel, p) }
         set(p, list(p).filter { $0.id != id })
+        pruneRemovedLayouts()
     }
 
     func muteAll() {
@@ -261,13 +293,14 @@ final class Store: ObservableObject {
     }
 
     func reloadAll() {
+        economyReload += 1
         kick = kick.map { var s = $0; s.reloadToken += 1; return s }
         twitch = twitch.map { var s = $0; s.reloadToken += 1; return s }
     }
 
     func clear(_ p: Platform) {
-        for it in list(p) where it.auto == true { dismissedAuto.insert(Self.statusKey(p, it.channel)) }
-        set(p, [])
+        for item in list(p) { ignoreGameChannel(item.channel, p) }
+        set(p, []); pruneRemovedLayouts()
     }
 }
 
@@ -275,6 +308,18 @@ final class Store: ObservableObject {
 
 enum Web {
     static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+    static let retired = NSHashTable<WKWebView>.weakObjects()
+
+    /// Interrompe mídia, scripts e recuperação antes de liberar um bloco offline/removido.
+    static func dispose(_ webView: WKWebView) {
+        retired.add(webView)
+        WebLoadQueue.shared.cancel(webView)
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+        webView.configuration.userContentController.removeAllUserScripts()
+        webView.loadHTMLString("", baseURL: nil)
+    }
 
     /// Todos usam o mesmo armazenamento: o login feito em qualquer janela vale para todas.
     static func config() -> WKWebViewConfiguration {
@@ -289,7 +334,7 @@ enum Web {
     }
 
     static func make(_ cfg: WKWebViewConfiguration = config()) -> WKWebView {
-        let wv = PFWebView(frame: .zero, configuration: cfg)
+        let wv = WKWebView(frame: .zero, configuration: cfg)
         wv.customUserAgent = userAgent
         wv.allowsBackForwardNavigationGestures = false
         wv.uiDelegate = Popups.shared
@@ -332,241 +377,6 @@ enum Web {
 
     static func keepAliveScript(mainFrameOnly: Bool = false) -> WKUserScript {
         WKUserScript(source: keepAliveJS, injectionTime: .atDocumentStart, forMainFrameOnly: mainFrameOnly)
-    }
-}
-
-/// WebView que "finge" ser mais larga (zoom reduzido). Na Twitch, com pelo menos ~1280 px de largura
-/// a página mostra a coluna do chat, e com ela os pontos e o bônus — sem precisar de uma 2ª página só de chat.
-final class PFWebView: WKWebView {
-    var minCSSWidth: CGFloat = 0 { didSet { applyZoom() } }
-
-    override func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(newSize)
-        applyZoom()
-    }
-
-    private func applyZoom() {
-        guard minCSSWidth > 0, bounds.width > 0 else { return }
-        let z = max(0.25, min(1, bounds.width / minCSSWidth))
-        if abs(pageZoom - z) > 0.01 { pageZoom = z }
-    }
-}
-
-/// Abre as páginas uma de cada vez (1,5 s entre elas), em vez de todas juntas ao abrir o app.
-final class LoadQueue {
-    static let shared = LoadQueue()
-    private var jobs: [() -> Void] = []
-    private var timer: Timer?
-    private var last = Date.distantPast
-    private let interval: TimeInterval = 1.5
-
-    func enqueue(_ job: @escaping () -> Void) {
-        jobs.append(job)
-        pump()
-    }
-
-    private func pump() {
-        guard timer == nil, !jobs.isEmpty else { return }
-        let wait = max(0, interval - Date().timeIntervalSince(last))
-        timer = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
-            guard let self else { return }
-            self.timer = nil
-            guard !self.jobs.isEmpty else { return }
-            self.last = Date()
-            self.jobs.removeFirst()()
-            self.pump()
-        }
-    }
-}
-
-/// Saldo de pontos da Twitch lido da própria página do canal (canal -> "1,3 mil")
-final class Points: ObservableObject {
-    static let shared = Points()
-    @Published var balance: [String: String] = [:]
-}
-
-/// Chat inteiro numa janela flutuante, aberto só quando você pede (resgatar recompensas).
-enum ChatPopup {
-    private static var panels: [String: NSPanel] = [:]
-    private static var observers: [String: NSObjectProtocol] = [:]
-
-    static func open(_ p: Platform, _ channel: String) {
-        let key = Store.statusKey(p, channel)
-        if let w = panels[key] { w.makeKeyAndOrderFront(nil); return }
-        let rect = NSRect(x: 0, y: 0, width: 440, height: 680)
-        let panel = NSPanel(contentRect: rect, styleMask: [.titled, .closable, .resizable, .utilityWindow],
-                            backing: .buffered, defer: false)
-        panel.title = "Chat de \(channel)"
-        panel.isReleasedWhenClosed = false
-        panel.isFloatingPanel = true
-        panel.hidesOnDeactivate = false
-        let wv = Web.make()
-        let ucc = wv.configuration.userContentController
-        ucc.addUserScript(Web.keepAliveScript())
-        if p == .twitch {
-            ucc.addUserScript(WKUserScript(source: LiveChat.twitchAutoClaimJS, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
-        }
-        wv.frame = rect
-        wv.autoresizingMask = [.width, .height]
-        panel.contentView = wv
-        panel.center()
-        panel.makeKeyAndOrderFront(nil)
-        panels[key] = panel
-        wv.load(URLRequest(url: p.chatURL(channel)))
-        observers[key] = NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification, object: panel, queue: .main) { [weak panel] _ in
-            (panel?.contentView as? WKWebView)?.stopLoading()
-            panel?.contentView = nil
-            panels[key] = nil
-            if let o = observers.removeValue(forKey: key) { NotificationCenter.default.removeObserver(o) }
-        }
-    }
-}
-
-/// A cada 2 min confere quem está ao vivo (seus canais + oficiais do Pokeidle).
-/// Twitch: API pública de GraphQL. Kick: API do site, chamada de dentro de uma página da Kick.
-final class LiveChecker: NSObject, WKNavigationDelegate {
-    static let shared = LiveChecker()
-    private weak var store: Store?
-    private var timer: Timer?
-    private var misses: [String: Int] = [:]
-    private var kickHelper: WKWebView?
-    private var kickReady = false
-    private var kickWaiters: [(WKWebView) -> Void] = []
-
-    func start(_ s: Store) {
-        guard store == nil else { return }
-        store = s
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.check() }
-        timer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in self?.check() }
-        timer?.tolerance = 10
-    }
-
-    func check() {
-        guard let s = store else { return }
-        var twitch = Set(s.twitch.map(\.channel)), kick = Set(s.kick.map(\.channel))
-        if s.autoOfficial {
-            for link in s.officialChannels {
-                guard let (p, c) = Store.parseLink(link) else { continue }
-                if p == .twitch { twitch.insert(c) } else { kick.insert(c) }
-            }
-        }
-        checkTwitch(Array(twitch)) { [weak self] r in self?.apply(.twitch, r) }
-        checkKick(Array(kick)) { [weak self] r in self?.apply(.kick, r) }
-    }
-
-    private func apply(_ p: Platform, _ r: [String: Bool]) {
-        guard let s = store, !r.isEmpty else { return }
-        var status = s.liveStatus
-        for (c, live) in r { status[Store.statusKey(p, c)] = live }
-        if status != s.liveStatus { s.liveStatus = status }
-
-        let official = Set(s.officialChannels.compactMap(Store.parseLink).filter { $0.0 == p }.map { $0.1 })
-        for (c, live) in r {
-            let k = Store.statusKey(p, c)
-            let item = s.list(p).first { $0.channel == c }
-            if live {
-                misses[k] = 0
-                if item == nil, s.autoOfficial, official.contains(c), s.liveCount < Store.maxLive, s.addAuto(p, c) {
-                    NotificationCenter.default.post(name: .pfToast, object: "✓ \(c) (\(p.title)) entrou ao vivo e foi adicionado")
-                }
-            } else if let item, item.auto == true {
-                // 2 checagens seguidas offline (evita sair numa queda rápida)
-                misses[k, default: 0] += 1
-                if misses[k, default: 0] >= 2 { misses[k] = 0; s.removeAuto(item.id, p) }
-            }
-        }
-    }
-
-    private func checkTwitch(_ names: [String], done: @escaping ([String: Bool]) -> Void) {
-        let names = names.filter { $0.range(of: #"^[a-z0-9_]{2,25}$"#, options: .regularExpression) != nil }
-        for start in stride(from: 0, to: names.count, by: 30) {
-            let chunk = Array(names[start..<min(start + 30, names.count)])
-            let q = chunk.enumerated().map { "u\($0.offset): user(login: \"\($0.element)\") { stream { id } }" }
-                .joined(separator: " ")
-            var req = URLRequest(url: URL(string: "https://gql.twitch.tv/gql")!)
-            req.httpMethod = "POST"
-            req.timeoutInterval = 20
-            req.setValue("kimne78kx3ncx6brgo4mv6wki5h1ko", forHTTPHeaderField: "Client-Id")
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = try? JSONSerialization.data(withJSONObject: ["query": "query { \(q) }"])
-            URLSession.shared.dataTask(with: req) { data, _, _ in
-                guard let data, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let d = obj["data"] as? [String: Any] else { return }
-                var r: [String: Bool] = [:]
-                for (i, name) in chunk.enumerated() {
-                    guard let u = d["u\(i)"] else { continue }
-                    guard let user = u as? [String: Any] else { r[name] = false; continue }   // canal não existe
-                    if let stream = user["stream"], !(stream is NSNull) { r[name] = true } else { r[name] = false }
-                }
-                DispatchQueue.main.async { done(r) }
-            }.resume()
-        }
-    }
-
-    private func checkKick(_ names: [String], done: @escaping ([String: Bool]) -> Void) {
-        guard !names.isEmpty else { return }
-        withKickHelper { [weak self] wv in
-            let js = """
-            const out = {};
-            for (const n of names) {
-              try {
-                const r = await fetch('/api/v2/channels/' + encodeURIComponent(n), { credentials: 'include', headers: { 'Accept': 'application/json' } });
-                if (r.status === 404) { out[n] = false; } else if (r.ok) {
-                  const j = await r.json();
-                  out[n] = !!(j && j.livestream && j.livestream.is_live !== false);
-                }
-              } catch (e) {}
-              await new Promise(function (res) { setTimeout(res, 300); });
-            }
-            return out;
-            """
-            wv.callAsyncJavaScript(js, arguments: ["names": names], in: nil, in: .defaultClient) { result in
-                guard case .success(let v) = result, let dict = v as? [String: Any], !dict.isEmpty else {
-                    self?.resetKickHelper()
-                    return
-                }
-                var r: [String: Bool] = [:]
-                for (k, val) in dict { if let b = (val as? NSNumber)?.boolValue { r[k] = b } }
-                done(r)
-            }
-        }
-    }
-
-    /// Página leve da Kick (a própria API em JSON) que serve de "origem" para as consultas
-    private func withKickHelper(_ job: @escaping (WKWebView) -> Void) {
-        if let wv = kickHelper, kickReady { job(wv); return }
-        kickWaiters.append(job)
-        guard kickHelper == nil else { return }
-        let wv = WKWebView(frame: NSRect(x: 0, y: 0, width: 10, height: 10), configuration: Web.config())
-        wv.customUserAgent = Web.userAgent
-        wv.navigationDelegate = self
-        kickHelper = wv
-        wv.load(URLRequest(url: URL(string: "https://kick.com/api/v2/channels/kick")!))
-    }
-
-    private func resetKickHelper() {
-        kickHelper?.stopLoading()
-        kickHelper = nil
-        kickReady = false
-    }
-
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        guard webView === kickHelper, webView.url?.host?.hasSuffix("kick.com") == true else { return }
-        kickReady = true
-        let w = kickWaiters
-        kickWaiters = []
-        w.forEach { $0(webView) }
-    }
-
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { helperFailed(webView) }
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        helperFailed(webView)
-    }
-    private func helperFailed(_ wv: WKWebView) {
-        guard wv === kickHelper else { return }
-        kickWaiters = []
-        resetKickHelper()
     }
 }
 
@@ -729,6 +539,7 @@ final class Recovery: NSObject, WKNavigationDelegate {
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard !Web.retired.contains(webView) else { return }
         webView.reload()
     }
 
@@ -753,7 +564,7 @@ final class Recovery: NSObject, WKNavigationDelegate {
     private func retry(_ webView: WKWebView, _ error: Error) {
         let failed = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak webView] in
-            guard let wv = webView, !wv.isLoading else { return }
+            guard let wv = webView, !Web.retired.contains(wv), !wv.isLoading else { return }
             if let url = failed ?? wv.url { wv.load(URLRequest(url: url)) } else { wv.reload() }
         }
     }
@@ -838,6 +649,148 @@ final class Popups: NSObject, WKUIDelegate, NSWindowDelegate {
     }
 }
 
+/// Espaça o início das páginas das lives e descarta carregamentos substituídos ou removidos.
+final class WebLoadQueue {
+    static let shared = WebLoadQueue()
+    private var jobs: [() -> Bool] = []
+    private var pending: [ObjectIdentifier: UUID] = [:]
+    private var scheduled = false
+    private var last = Date.distantPast
+
+    func load(_ view: WKWebView, url: URL) {
+        let id = ObjectIdentifier(view), ticket = UUID()
+        pending[id] = ticket
+        jobs.append { [weak self, weak view] in
+            guard let self, self.pending[id] == ticket else { return false }
+            self.pending[id] = nil
+            guard let view, !Web.retired.contains(view) else { return false }
+            view.load(URLRequest(url: url))
+            return true
+        }
+        pump()
+    }
+
+    func cancel(_ view: WKWebView) { pending[ObjectIdentifier(view)] = nil }
+    func isPending(_ view: WKWebView) -> Bool { pending[ObjectIdentifier(view)] != nil }
+
+    private func pump() {
+        guard !scheduled, !jobs.isEmpty else { return }
+        scheduled = true
+        let delay = max(0, 1.5 - Date().timeIntervalSince(last))
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.scheduled = false
+            if self.jobs.removeFirst()() { self.last = Date() }
+            self.pump()
+        }
+    }
+}
+
+// MARK: - Twitch econômica
+
+@MainActor
+struct TwitchEconomyPanel: View {
+    @EnvironmentObject var store: Store
+    @State private var status = "Conectando ao chat…"
+
+    var body: some View {
+        let plan = store.economyPlan
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 12) {
+                Toggle("Twitch econômica (experimental)", isOn: $store.twitchEconomy).toggleStyle(.checkbox)
+                Toggle("Kick econômica", isOn: $store.kickEconomy).toggleStyle(.checkbox)
+                    .help("Qualidade mínima e chat leve, mantendo o vídeo e a faixa de pontos")
+                if store.twitchEconomy {
+                    Text(plan.channels.isEmpty ? "Aguardando canais online" : status)
+                        .font(.caption).foregroundStyle(.secondary)
+                    if plan.total > 100 { Text("Limite: 100 de \(plan.total) canais").font(.caption) }
+                    Spacer()
+                    Button("Reconectar Twitch") { store.economyReload += 1 }
+                        .disabled(plan.channels.isEmpty)
+                }
+            }
+            if store.twitchEconomy {
+                Text("Um chat compartilhado, sem vídeos. Confira os bônus no Pokeidle; este modo não garante Pontos do Canal da Twitch.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if store.kickEconomy {
+                Text("Kick: vídeo em qualidade mínima e mensagens ocultas na faixa de pontos. Abra o chat para consultar ou resgatar; novas mensagens voltam a aparecer.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background {
+            if store.twitchEconomy, let url = plan.url {
+                TwitchEconomyView(url: url, reloadToken: store.economyReload, status: $status)
+                    .frame(width: 1, height: 1).clipped().allowsHitTesting(false).accessibilityHidden(true)
+            }
+        }
+    }
+}
+
+@MainActor
+struct TwitchEconomyView: NSViewRepresentable {
+    let url: URL
+    let reloadToken: Int
+    @Binding var status: String
+
+    final class Coordinator: NSObject, WKScriptMessageHandler {
+        var loadedKey = ""
+        weak var webView: WKWebView?
+        var onStatus: (String) -> Void
+        init(onStatus: @escaping (String) -> Void) { self.onStatus = onStatus }
+
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.webView === webView, message.frameInfo.isMainFrame,
+                  message.frameInfo.securityOrigin.host == "www.twitch.tv",
+                  let body = message.body as? [String: Any],
+                  let connected = body["connected"] as? Bool,
+                  let authenticated = body["authenticated"] as? Bool,
+                  let joined = body["joined"] as? Int, let requested = body["requested"] as? Int,
+                  (0...100).contains(joined), (1...100).contains(requested) else { return }
+            onStatus(!connected ? "Aguardando conexão com o chat…"
+                : !authenticated ? "Sem login — entre na Twitch e reconecte"
+                : "\(joined)/\(requested) chats conectados · sem vídeo")
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator { status = $0 } }
+
+    func makeNSView(context: Context) -> WKWebView {
+        let config = Web.config()
+        config.userContentController.addUserScript(Web.keepAliveScript())
+        config.userContentController.add(context.coordinator, name: "pfTwitchEconomy")
+        let view = Web.make(config)
+        context.coordinator.webView = view
+        return view
+    }
+
+    func updateNSView(_ view: WKWebView, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.onStatus = { status = $0 }
+        let key = "\(url.absoluteString)|\(reloadToken)"
+        guard coordinator.loadedKey != key else { return }
+        coordinator.loadedKey = key
+        guard let resource = Bundle.main.url(forResource: "twitch-economy", withExtension: "js"),
+              let source = try? String(contentsOf: resource, encoding: .utf8) else {
+            DispatchQueue.main.async { status = "Script indisponível. Recompile o app com build.sh." }
+            return
+        }
+        let scripts = view.configuration.userContentController
+        scripts.removeAllUserScripts()
+        scripts.addUserScript(Web.keepAliveScript())
+        scripts.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        DispatchQueue.main.async { status = "Conectando ao chat…" }
+        WebLoadQueue.shared.load(view, url: url)
+    }
+
+    static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
+        coordinator.webView = nil
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "pfTwitchEconomy")
+        Web.dispose(view)
+    }
+}
+
 // MARK: - Player
 
 struct LivePlayer: NSViewRepresentable {
@@ -845,29 +798,29 @@ struct LivePlayer: NSViewRepresentable {
     let platform: Platform
     let quality: VideoQuality
 
-    final class Coordinator: NSObject, WKScriptMessageHandler {
+    final class Coordinator {
         var loadedKey = ""
         var lastMuted: Bool?
-        var channel = ""
         weak var webView: WKWebView?
-
-        /// Saldo de pontos lido na página do canal da Twitch
-        func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard let s = message.body as? String else { return }
-            let v = String(s.prefix(20)), c = channel
-            DispatchQueue.main.async { if Points.shared.balance[c] != v { Points.shared.balance[c] = v } }
-        }
+        var loadingObserver: NSKeyValueObservation?
         var timer: Timer?
         var stalledChecks = 0
+
+        func applyMuted() {
+            guard let webView, !Web.retired.contains(webView), let muted = lastMuted else { return }
+            webView.evaluateJavaScript("window.__kmSetMuted && window.__kmSetMuted(\(muted));", completionHandler: nil)
+        }
 
         /// A cada 1 min confere se o vídeo está tocando; se ficar 5 min parado, recarrega a live.
         func startWatchdog() {
             timer?.invalidate()
             timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-                guard let self, let wv = self.webView, !wv.isLoading else { return }
+                guard let self, let wv = self.webView, !wv.isLoading,
+                      !WebLoadQueue.shared.isPending(wv) else { return }
                 // Tocando de verdade = não pausado E o tempo do vídeo andou desde a última checagem
                 let js = "(function(){var v=document.querySelector('video');if(!v||v.paused||v.readyState<2)return false;var t=v.currentTime,ok=window.__kmLastT!==t;window.__kmLastT=t;return ok;})()"
-                wv.evaluateJavaScript(js) { result, _ in
+                wv.evaluateJavaScript(js) { [weak self, weak wv] result, _ in
+                    guard let self, let wv, !Web.retired.contains(wv) else { return }
                     if (result as? Bool) == true {
                         self.stalledChecks = 0
                     } else {
@@ -890,24 +843,26 @@ struct LivePlayer: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let wv = Web.make()
         Skeleton.attach(wv, style: .video)
-        if platform == .twitch {
-            (wv as? PFWebView)?.minCSSWidth = 1280   // faz a Twitch montar a coluna do chat (pontos)
-            wv.configuration.userContentController.add(LiveChat.WeakHandler(context.coordinator), name: "pfPoints")
-        }
         context.coordinator.webView = wv
+        // O estado pode mudar enquanto a navegação aguarda na fila ou carrega.
+        context.coordinator.loadingObserver = wv.observe(\.isLoading, options: [.new]) { [weak c = context.coordinator] view, _ in
+            if !view.isLoading { c?.applyMuted() }
+        }
         context.coordinator.startWatchdog()
         return wv
     }
 
-    static func dismantleNSView(_ wv: WKWebView, coordinator: Coordinator) {
+    static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.loadingObserver?.invalidate()
+        coordinator.loadingObserver = nil
         coordinator.timer?.invalidate()
-        wv.stopLoading()
-        wv.configuration.userContentController.removeScriptMessageHandler(forName: "pfPoints")
+        coordinator.timer = nil
+        coordinator.webView = nil
+        Web.dispose(webView)
     }
 
     func updateNSView(_ wv: WKWebView, context: Context) {
         let c = context.coordinator
-        c.channel = item.channel
         // Mudar a qualidade recarrega a live (os sites só leem a preferência ao abrir o player)
         let key = "\(item.channel)|\(item.reloadToken)|\(quality.rawValue)"
         if c.loadedKey != key {
@@ -917,16 +872,17 @@ struct LivePlayer: NSViewRepresentable {
             let ucc = wv.configuration.userContentController
             ucc.removeAllUserScripts()
             ucc.addUserScript(Web.keepAliveScript())
+            if platform == .kick,
+               let resource = Bundle.main.url(forResource: "kick-economy", withExtension: "js"),
+               let source = try? String(contentsOf: resource, encoding: .utf8) {
+                ucc.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            }
             ucc.addUserScript(WKUserScript(source: setupJS(muted: item.muted, quality: quality),
                                            injectionTime: .atDocumentStart, forMainFrameOnly: false))
-            let url = platform.playerURL(item.channel, muted: item.muted)
-            LoadQueue.shared.enqueue { [weak wv, weak c] in
-                guard let wv, let c, c.loadedKey == key else { return }
-                wv.load(URLRequest(url: url))
-            }
+            WebLoadQueue.shared.load(wv, url: platform.playerURL(item.channel, muted: item.muted))
         } else if c.lastMuted != item.muted {
             c.lastMuted = item.muted
-            wv.evaluateJavaScript("window.__kmSetMuted && window.__kmSetMuted(\(item.muted));", completionHandler: nil)
+            c.applyMuted()
         }
     }
 
@@ -966,21 +922,6 @@ struct LivePlayer: NSViewRepresentable {
             // e aceita o aviso "Destinado a públicos específicos"
             setInterval(function () {
               addCSS();
-              // Pontos do canal: a coluna do chat fica atrás do vídeo; lê o saldo e resgata o bônus
-              var bal = document.querySelector('[data-test-selector="copo-balance-string"]');
-              if (bal && window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pfPoints) {
-                var txt = (bal.textContent || '').trim();
-                if (txt && txt !== window.__kmBal) { window.__kmBal = txt; window.webkit.messageHandlers.pfPoints.postMessage(txt); }
-              }
-              var bicon = document.querySelector('.claimable-bonus__icon');
-              var bonus = bicon ? bicon.closest('button')
-                : document.querySelector('button[aria-label="Claim Bonus"], button[aria-label="Resgatar bônus"]');
-              if (bonus) { bonus.click(); }
-              // Chat recolhido = sem pontos: expande a coluna
-              if (!document.querySelector('.chat-shell, [data-a-target="chat-input"]')) {
-                var exp = document.querySelector('button[data-a-target="right-column__toggle-collapse-btn"]');
-                if (exp && /expand|expandir/i.test(exp.getAttribute('aria-label') || '')) { exp.click(); }
-              }
               var gate = document.querySelector(
                 'button[data-a-target="content-classification-gate-overlay-start-watching-button"],' +
                 'button[data-a-target="player-overlay-mature-accept"]');
@@ -1006,7 +947,9 @@ struct LivePlayer: NSViewRepresentable {
           }
           // Player da Kick: ele pausa sozinho (ociosidade, "aba inativa", aviso de HD).
           // Só deixa pausar se foi você que clicou; se pausar mesmo assim, aperta play de novo.
-          if (location.hostname === 'player.kick.com' && KM_Q > 0) {
+          if (location.hostname === 'player.kick.com' && window.__pfApplyKickQuality) {
+            window.__pfApplyKickQuality(KM_Q);
+          } else if (location.hostname === 'player.kick.com' && KM_Q > 0) {
             // Kick não guarda preferência: abre o menu de qualidade do player e escolhe a opção
             // mais alta que não passe do limite (ou a menor que existir)
             var kmTries = 0;
@@ -1075,6 +1018,7 @@ struct LiveChat: NSViewRepresentable {
     let channel: String
     let platform: Platform
     let reloadToken: Int
+    let economy: Bool
 
     static let stripHeight: CGFloat = 46
     static let pageHeight: CGFloat = 420
@@ -1087,6 +1031,13 @@ struct LiveChat: NSViewRepresentable {
         weak var box: NSView?
         var channel = ""
         var panel: NSPanel?
+        var economy = false
+        var loadingObserver: NSKeyValueObservation?
+
+        func applyEconomy() {
+            guard let webView, !Web.retired.contains(webView) else { return }
+            webView.evaluateJavaScript("window.__pfSetKickEconomy && window.__pfSetKickEconomy(\(economy && panel == nil));", completionHandler: nil)
+        }
 
         func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
             if panel == nil { expand() }
@@ -1116,6 +1067,7 @@ struct LiveChat: NSViewRepresentable {
             }
             p.makeKeyAndOrderFront(nil)
             panel = p
+            applyEconomy()
         }
 
         func collapse() {
@@ -1126,6 +1078,7 @@ struct LiveChat: NSViewRepresentable {
             wv.autoresizingMask = [.width, .maxYMargin]
             box.addSubview(wv)
             panel = nil
+            applyEconomy()
         }
 
         func windowWillClose(_ notification: Notification) { collapse() }
@@ -1167,18 +1120,34 @@ struct LiveChat: NSViewRepresentable {
         wv.configuration.userContentController.add(WeakHandler(context.coordinator), name: "pfChat")
         context.coordinator.webView = wv
         context.coordinator.box = box
+        context.coordinator.loadingObserver = wv.observe(\.isLoading, options: [.new]) { [weak c = context.coordinator] view, _ in
+            if !view.isLoading { c?.applyEconomy() }
+        }
         return box
     }
 
     static func dismantleNSView(_ box: NSView, coordinator: Coordinator) {
+        coordinator.loadingObserver?.invalidate()
+        coordinator.loadingObserver = nil
+        // Não devolver o chat para o bloco que está sendo destruído.
+        coordinator.panel?.delegate = nil
         coordinator.panel?.close()
-        coordinator.webView?.configuration.userContentController.removeScriptMessageHandler(forName: "pfChat")
+        coordinator.panel?.contentView = nil
+        coordinator.panel = nil
+        if let webView = coordinator.webView {
+            webView.configuration.userContentController.removeScriptMessageHandler(forName: "pfChat")
+            Web.dispose(webView)
+            webView.removeFromSuperview()
+        }
+        coordinator.webView = nil
+        coordinator.box = nil
     }
 
     func updateNSView(_ box: NSView, context: Context) {
         let wv = context.coordinator.webView!
         context.coordinator.channel = channel
-        let key = "\(channel)|\(reloadToken)"
+        context.coordinator.economy = platform == .kick && economy
+        let key = "\(channel)|\(reloadToken)|\(economy)"
         guard context.coordinator.loadedKey != key else { return }
         context.coordinator.loadedKey = key
         let ucc = wv.configuration.userContentController
@@ -1188,13 +1157,14 @@ struct LiveChat: NSViewRepresentable {
         if platform == .twitch {
             ucc.addUserScript(WKUserScript(source: Self.twitchAutoClaimJS,
                                            injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        } else if let url = Bundle.main.url(forResource: "kick-economy", withExtension: "js"),
+                  let source = try? String(contentsOf: url, encoding: .utf8) {
+            ucc.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            let compact = economy && context.coordinator.panel == nil
+            ucc.addUserScript(WKUserScript(source: "window.__pfSetKickEconomy && window.__pfSetKickEconomy(\(compact));",
+                                          injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
-        let url = platform.chatURL(channel)
-        let coord = context.coordinator
-        LoadQueue.shared.enqueue { [weak wv, weak coord] in
-            guard let wv, let coord, coord.loadedKey == key else { return }
-            wv.load(URLRequest(url: url))
-        }
+        WebLoadQueue.shared.load(wv, url: platform.chatURL(channel))
     }
 
     /// Clica sozinho no bônus de pontos do canal da Twitch quando ele aparece.
@@ -1289,7 +1259,7 @@ struct SeenItem: Identifiable {
 extension Notification.Name {
     static let pfOpenGame = Notification.Name("pfOpenGame")
     static let pfAddLive = Notification.Name("pfAddLive")
-    static let pfToast = Notification.Name("pfToast")
+    static let pfGameChannels = Notification.Name("pfGameChannels")
 }
 
 /// Recebe os anúncios lidos na página do jogo, compara com as regras e notifica.
@@ -1398,10 +1368,6 @@ final class MarketWatcher: NSObject, ObservableObject, WKScriptMessageHandler, U
     func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let msg = message.body as? [String: Any] else { return }
         let url = msg["url"] as? String ?? "dom"
-        if let off = msg["official"] as? [String] {
-            DispatchQueue.main.async { Store.current?.mergeOfficial(Array(off.prefix(100))) }
-            return
-        }
         if let text = msg["sample"] as? String, url != "dom" { writeSample(url: url, text: text) }
         if url != "dom", !endpoints.contains(url) { endpoints = Array((endpoints + [url]).suffix(10)) }
         lastCapture = Date()
@@ -1614,37 +1580,6 @@ final class MarketWatcher: NSObject, ObservableObject, WKScriptMessageHandler, U
             });
             if (out.length) { post({ url: 'dom', items: out }); }
           }, 10000);
-
-          // Canais oficiais (modal "Bônus Twitch"): aprende a lista para abrir as lives sozinho
-          var pfOff = {};
-          setInterval(function () {
-            var heads = Array.prototype.filter.call(document.querySelectorAll('div, span, p, h1, h2, h3, h4, h5'), function (e) {
-              return e.children.length === 0 && /^\s*canais oficiais\s*$/i.test(e.textContent || '');
-            });
-            var found = [];
-            heads.forEach(function (h) {
-              var box = h.parentElement;
-              for (var i = 0; i < 4 && box && !/ao vivo|offline/i.test(box.innerText || ''); i++) { box = box.parentElement; }
-              if (!box) { return; }
-              box.querySelectorAll('a[href*="twitch.tv/"], a[href*="kick.com/"]').forEach(function (a) { found.push(a.href); });
-              if (found.length) { return; }
-              // Sem links: cada linha com "AO VIVO" -> primeira palavra é o canal
-              Array.prototype.forEach.call(box.querySelectorAll('*'), function (e) {
-                var t = e.innerText || '';
-                if (!/ao vivo/i.test(t) || t.length > 160) { return; }
-                var inner = Array.prototype.some.call(e.children, function (c) {
-                  var ct = c.innerText || ''; return /ao vivo/i.test(ct) && ct.length >= t.length * 0.9;
-                });
-                if (inner) { return; }
-                var name = t.split('\n').map(function (l) { return l.trim(); })
-                  .find(function (l) { return /^[A-Za-z0-9_]{3,25}$/.test(l); });
-                if (name) { found.push((/kick/i.test(e.innerHTML) ? 'kick.com/' : 'twitch.tv/') + name.toLowerCase()); }
-              });
-            });
-            var novo = false;
-            found.forEach(function (l) { if (!pfOff[l]) { pfOff[l] = 1; novo = true; } });
-            if (novo) { post({ official: Object.keys(pfOff) }); }
-          }, 15000);
         })();
         """#
         return WKUserScript(source: js.replacingOccurrences(of: "__POLL__", with: String(pollSeconds)),
@@ -1795,6 +1730,28 @@ enum Game {
     static let url = URL(string: "https://pokeidle.io/app")!
 }
 
+final class GameChannelWatcher: NSObject, WKScriptMessageHandler {
+    static let shared = GameChannelWatcher()
+
+    func script() -> WKUserScript? {
+        guard let url = Bundle.main.url(forResource: "game-channels", withExtension: "js"),
+              let source = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        return WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+    }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame, message.webView === MarketWatcher.shared.gameWebView,
+              message.frameInfo.securityOrigin.host == "pokeidle.io" || message.frameInfo.securityOrigin.host.hasSuffix(".pokeidle.io"),
+              let rows = message.body as? [[String: Any]] else { return }
+        let channels = rows.prefix(200).compactMap { row -> GameChannel? in
+            guard let platform = row["platform"] as? String, let channel = row["channel"] as? String else { return nil }
+            return GameChannel(platform: platform, channel: channel)
+        }
+        guard !channels.isEmpty else { return }
+        DispatchQueue.main.async { NotificationCenter.default.post(name: .pfGameChannels, object: channels) }
+    }
+}
+
 struct GameView: NSViewRepresentable {
     let reloadToken: Int
 
@@ -1807,6 +1764,8 @@ struct GameView: NSViewRepresentable {
         wv.allowsBackForwardNavigationGestures = true
         let ucc = wv.configuration.userContentController
         ucc.addUserScript(Web.keepAliveScript())
+        if let script = GameChannelWatcher.shared.script() { ucc.addUserScript(script) }
+        ucc.add(GameChannelWatcher.shared, name: "pfGameChannels")
         ucc.addUserScript(MarketWatcher.shared.script())
         ucc.add(MarketWatcher.shared, name: "pf")
         MarketWatcher.shared.gameWebView = wv
@@ -1826,34 +1785,10 @@ struct GameView: NSViewRepresentable {
 /// Tipo de arraste num bloco: mover pelo título ou redimensionar por borda/canto.
 enum TileDrag { case move, right, bottom, corner }
 
-/// Faixa de pontos da Twitch, sem página extra: o saldo vem da própria página do canal.
-struct TwitchPointsStrip: View {
-    @ObservedObject var points = Points.shared
-    let channel: String
-    static let height: CGFloat = 26
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "seal.fill").font(.system(size: 10)).foregroundStyle(Platform.twitch.color)
-            Text(points.balance[channel].map { "\($0) pontos" } ?? "Pontos: carregando…")
-                .font(.system(size: 11, weight: .semibold)).monospacedDigit().lineLimit(1)
-            Spacer()
-            Button { ChatPopup.open(.twitch, channel) } label: { Label("Chat", systemImage: "bubble.left") }
-                .buttonStyle(.borderless)
-                .font(.system(size: 11))
-                .help("Abrir o chat inteiro (resgatar recompensas). O bônus já é resgatado sozinho.")
-        }
-        .padding(.horizontal, 8)
-        .frame(height: Self.height)
-        .background(Color(nsColor: .controlBackgroundColor))
-    }
-}
-
+@MainActor
 struct Tile: View {
     @EnvironmentObject var store: Store
     let entry: Entry
-    /// Ao vivo e dentro do limite: carrega player/chat. Senão, só um cartão leve.
-    var active = true
     /// (tipo, deslocamento, terminou)
     var onDrag: ((TileDrag, CGSize, Bool) -> Void)? = nil
     private var item: StreamItem { entry.item }
@@ -1870,19 +1805,12 @@ struct Tile: View {
                     .gesture(dragGesture(.move))
                     .onHover { $0 ? NSCursor.openHand.push() : NSCursor.pop() }
                     .help("Arraste para mover o bloco")
-                if active {
-                    LivePlayer(item: item, platform: platform, quality: store.quality)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if store.showChat {
-                        if platform == .twitch {
-                            TwitchPointsStrip(channel: item.channel)
-                        } else {
-                            LiveChat(channel: item.channel, platform: platform, reloadToken: item.reloadToken)
-                                .frame(height: LiveChat.stripHeight)
-                        }
-                    }
-                } else {
-                    idleCard
+                LivePlayer(item: item, platform: platform, quality: platform == .kick && store.kickEconomy ? .lowest : store.quality)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if store.showChat {
+                    LiveChat(channel: item.channel, platform: platform, reloadToken: item.reloadToken,
+                             economy: platform == .kick && store.kickEconomy)
+                        .frame(height: LiveChat.stripHeight)
                 }
                 // Borda de baixo: altura
                 grip(.bottom, cursor: .resizeUpDown)
@@ -1910,21 +1838,6 @@ struct Tile: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
-    /// Offline ou fora do limite: nenhuma página aberta
-    private var idleCard: some View {
-        let queued = store.isLive(entry)
-        return VStack(spacing: 6) {
-            Image(systemName: queued ? "hourglass" : "moon.zzz.fill")
-                .font(.system(size: 22)).foregroundStyle(.secondary)
-            Text(queued ? "Na fila" : "Offline").font(.system(size: 12, weight: .semibold))
-            Text(queued ? "Limite de \(Store.maxLive) lives abertas" : "Abre sozinha quando entrar ao vivo")
-                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-        }
-        .padding(8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(white: 0.05))
-    }
-
     private func grip(_ kind: TileDrag, cursor: NSCursor) -> some View {
         Rectangle()
             .fill(Color(nsColor: .controlBackgroundColor).opacity(0.8))
@@ -1941,14 +1854,10 @@ struct Tile: View {
 
     private var header: some View {
         HStack(spacing: 6) {
-            Circle().fill(store.isLive(entry) ? platform.color : Color.gray).frame(width: 7, height: 7)
+            Circle().fill(platform.color).frame(width: 7, height: 7)
             Text(item.channel)
                 .font(.system(size: 11, weight: .semibold))
                 .lineLimit(1)
-            if item.auto == true {
-                Text("OFICIAL").font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary)
-                    .help("Canal oficial do Pokeidle, aberto sozinho. Sai quando a live acabar.")
-            }
             Spacer()
             Button {
                 store.update(item.id, platform) { $0.muted.toggle() }
@@ -1967,7 +1876,7 @@ struct Tile: View {
             Button {
                 store.remove(item.id, platform)
             } label: { Image(systemName: "xmark") }
-            .help("Fechar")
+            .help("Remover canal do monitoramento")
         }
         .font(.system(size: 11))
         .buttonStyle(.borderless)
@@ -1995,6 +1904,7 @@ enum Edge {
 /// - divisória vertical entre dois blocos da mesma linha: muda a largura deles
 /// - divisória horizontal entre linhas: muda a altura das linhas
 /// Os tamanhos ficam salvos. Os players não são recriados ao redimensionar.
+@MainActor
 struct TileGrid: View {
     @EnvironmentObject var store: Store
 
@@ -2081,15 +1991,14 @@ struct TileGrid: View {
     static let totalKey = "total"
 
     var body: some View {
-        let items = store.all
-        let active = store.activeIDs
+        let items = store.videoEntries
         GeometryReader { geo in
             let L = layout(items, geo.size)
             ZStack(alignment: .topLeading) {
                 ForEach(items) { entry in
                     let key = entry.id.uuidString
                     let f = rect(key, entry.id, L, geo.size)
-                    Tile(entry: entry, active: active.contains(entry.id), onDrag: { kind, t, ended in
+                    Tile(entry: entry, onDrag: { kind, t, ended in
                         drag(key, from: f, kind, t, ended: ended, area: geo.size)
                     })
                     .frame(width: f.width, height: f.height)
@@ -2140,6 +2049,36 @@ struct TileGrid: View {
 
 // MARK: - Tela principal
 
+@MainActor
+struct LiveControls: View {
+    @EnvironmentObject var store: Store
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Toggle("Gerenciar lives automaticamente", isOn: $store.autoLives)
+                .toggleStyle(.checkbox)
+                .help("Liga ou desliga as verificações periódicas, preservando as lives abertas")
+            Picker("Verificar a cada", selection: $store.livePoll) {
+                Text("30 s").tag(30)
+                Text("1 min").tag(60)
+                Text("2 min").tag(120)
+                Text("5 min").tag(300)
+            }
+            .frame(width: 175)
+            Text(store.liveSummary)
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                .help(store.liveSummary)
+            Spacer(minLength: 0)
+            Button("Verificar agora") { store.checkLivesNow() }
+                .disabled(store.liveChecking)
+                .help("Busca os canais do jogo e abre os online, mesmo com o automático desligado")
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+}
+
+@MainActor
 struct ContentView: View {
     @EnvironmentObject var store: Store
     @State private var input = ""
@@ -2170,8 +2109,22 @@ struct ContentView: View {
             // As duas abas ficam sempre carregadas; a ativa só vai para a frente.
             // Assim o jogo e as lives continuam rodando ao trocar de aba.
             ZStack {
-                Group {
-                    if store.all.isEmpty { empty } else { TileGrid() }
+                VStack(spacing: 0) {
+                    LiveControls()
+                    TwitchEconomyPanel()
+                    Divider()
+                    ZStack {
+                        TileGrid()
+                        if store.videoEntries.isEmpty {
+                            if store.twitchEconomy && !store.economyPlan.channels.isEmpty {
+                                VStack(spacing: 8) {
+                                    Text("Twitch em modo econômico")
+                                    Text("Acompanhe a conexão acima e os bônus na aba Pokeidle.")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            } else { empty }
+                        }
+                    }
                 }
                 .background(Color(nsColor: .windowBackgroundColor))
                 .zIndex(store.tab == .lives ? 1 : 0)
@@ -2193,10 +2146,10 @@ struct ContentView: View {
             guard let link = n.object as? String else { return }
             addFromGame(link)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .pfToast)) { n in
-            if let msg = n.object as? String { showToast(msg) }
+        .onReceive(NotificationCenter.default.publisher(for: .pfGameChannels)) { n in
+            guard let channels = n.object as? [GameChannel] else { return }
+            store.receiveGameChannels(channels)
         }
-        .onAppear { LiveChecker.shared.start(store) }
         .overlay(alignment: .bottom) {
             if let toast {
                 Text(toast)
@@ -2218,13 +2171,9 @@ struct ContentView: View {
         let platform = link.contains("twitch.tv") ? "Twitch" : "Kick"
         let before = store.all.count
         store.add(link, default: .twitch)
-        showToast(store.all.count > before
+        let msg = store.all.count > before
             ? "✓ \(name) (\(platform)) adicionado às Lives"
-            : "\(name) já está nas Lives")
-        if store.all.count > before { LiveChecker.shared.check() }
-    }
-
-    private func showToast(_ msg: String) {
+            : "\(name) já está nas Lives"
         toastID += 1
         let id = toastID
         toast = msg
@@ -2248,10 +2197,17 @@ struct ContentView: View {
         VStack(spacing: 8) {
             Image(systemName: "play.rectangle.on.rectangle")
                 .font(.system(size: 42)).foregroundStyle(.secondary)
-            Text("Adicione canais da Kick ou da Twitch acima")
+            Text(store.all.isEmpty ? "Entre no Pokeidle para carregar os canais" : "Nenhuma live aberta no momento")
                 .foregroundStyle(.secondary)
-            Text("Ex.: xqc, kick.com/canal, twitch.tv/canal")
+            Text(store.all.isEmpty
+                 ? "Os canais oficiais são reconhecidos pelo jogo. Use Verificar agora para abrir os online."
+                 : store.unknownLives > 0
+                    ? "Não foi possível verificar alguns canais. Use Verificar agora para tentar novamente."
+                    : store.autoLives ? "As lives abrirão automaticamente quando os canais estiverem online."
+                        : "Clique em Verificar agora para trazer os canais online à tela.")
                 .font(.caption).foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 20)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -2303,25 +2259,13 @@ struct ContentView: View {
             .frame(width: 150)
             .help("Qualidade de todas as lives (menor = menos peso). Trocar recarrega as lives.")
 
-            Toggle(isOn: $store.autoOfficial) { Image(systemName: "dot.radiowaves.left.and.right") }
-                .toggleStyle(.button)
-                .help(store.officialChannels.isEmpty
-                      ? "Abrir sozinho os canais oficiais do Pokeidle quando entrarem ao vivo. Abra o \"Bônus Twitch\" no jogo uma vez para o app aprender a lista."
-                      : "Abrir sozinho os \(store.officialChannels.count) canais oficiais do Pokeidle quando entrarem ao vivo")
-
-            Text("\(store.liveCount)/\(Store.maxLive)")
-                .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
-                .help("Lives ao vivo / limite de lives abertas ao mesmo tempo")
-
             Button("Silenciar todos") { store.muteAll() }
-            Button { store.reloadAll(); LiveChecker.shared.check() } label: { Image(systemName: "arrow.clockwise") }
+            Button { store.reloadAll() } label: { Image(systemName: "arrow.clockwise") }
                 .help("Recarregar tudo (use depois de fazer login)")
             Menu("Limpar") {
                 Button("Kick") { store.clear(.kick) }
                 Button("Twitch") { store.clear(.twitch) }
                 Button("Tudo") { store.clear(.kick); store.clear(.twitch) }
-                Divider()
-                Button("Lista de canais oficiais (\(store.officialChannels.count))") { store.officialChannels = [] }
             }
             .frame(width: 80)
         }
@@ -2330,7 +2274,6 @@ struct ContentView: View {
     private func addInput() {
         store.add(input, default: target)
         input = ""
-        LiveChecker.shared.check()
     }
 }
 
@@ -2356,6 +2299,7 @@ enum KeepAwake {
 }
 
 @main
+@MainActor
 struct KickMultiApp: App {
     @StateObject private var store = Store()
 

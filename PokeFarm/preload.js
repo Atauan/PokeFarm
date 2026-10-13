@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('pf', {
   platform: process.platform,
+  liveStatus: (platform, channels) => ipcRenderer.invoke('live-status', platform, channels),
   notify: (title, body) => ipcRenderer.send('notify', { title: String(title), body: String(body) }),
   attention: () => ipcRenderer.send('attention'),
   openEdge: (url) => ipcRenderer.send('open-edge', String(url)),
@@ -11,6 +12,5 @@ contextBridge.exposeInMainWorld('pf', {
   writeSample: (url, text) => ipcRenderer.send('write-sample', { url: String(url), text: String(text).slice(0, 30000) }),
   openDataDir: () => ipcRenderer.send('open-data-dir'),
   onOpenTab: (cb) => ipcRenderer.on('open-tab', (_e, tab) => cb(String(tab))),
-  checkLive: (req) => ipcRenderer.invoke('check-live', req),
   onAddLive: (cb) => ipcRenderer.on('add-live', (_e, link) => cb(String(link))),
 });

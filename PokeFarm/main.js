@@ -4,6 +4,7 @@ const { app, BrowserWindow, ipcMain, Notification, powerSaveBlocker, shell, sess
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
+const { createLiveStatusService } = require('./live-status');
 
 // Todas as lives, chats, jogo e janelas de login usam a mesma sessão: logou uma vez, vale para tudo
 const PARTITION = 'persist:pokefarm';
@@ -68,80 +69,8 @@ function addLive(link) {
   if (win && !win.isDestroyed()) win.webContents.send('add-live', link);
 }
 
-// MARK: Quem está ao vivo (Twitch: GraphQL público; Kick: API do site, de dentro de uma página da Kick)
-
-const LIVE_NAME = /^[a-z0-9_-]{2,40}$/;
-let kickHelper = null;
-let kickReady = null;
-
-function resetKickHelper() {
-  if (kickHelper && !kickHelper.isDestroyed()) kickHelper.destroy();
-  kickHelper = null;
-  kickReady = null;
-}
-
-function getKickHelper() {
-  if (kickReady && kickHelper && !kickHelper.isDestroyed()) return kickReady;
-  kickHelper = new BrowserWindow({
-    show: false, width: 400, height: 300,
-    webPreferences: { partition: PARTITION, contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: false },
-  });
-  const w = kickHelper;
-  kickReady = w.loadURL('https://kick.com/api/v2/channels/kick').then(() => w).catch(() => { resetKickHelper(); return null; });
-  return kickReady;
-}
-
-async function checkTwitch(names) {
-  const out = {};
-  for (let i = 0; i < names.length; i += 30) {
-    const chunk = names.slice(i, i + 30).filter((n) => /^[a-z0-9_]{2,25}$/.test(n));
-    if (!chunk.length) continue;
-    const q = chunk.map((n, j) => `u${j}: user(login: "${n}") { stream { id } }`).join(' ');
-    try {
-      const r = await fetch('https://gql.twitch.tv/gql', {
-        method: 'POST',
-        headers: { 'Client-Id': 'kimne78kx3ncx6brgo4mv6wki5h1ko', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: `query { ${q} }` }),
-      });
-      const j = await r.json();
-      if (!j || !j.data) continue;
-      chunk.forEach((n, k) => {
-        if (!(`u${k}` in j.data)) return;
-        const u = j.data[`u${k}`];
-        out[n] = !!(u && u.stream);
-      });
-    } catch (_) { /* sem internet: fica como estava */ }
-  }
-  return out;
-}
-
-async function checkKick(names) {
-  if (!names.length) return {};
-  const w = await getKickHelper();
-  if (!w || w.isDestroyed()) return {};
-  const js = `(async (names) => {
-    const out = {};
-    for (const n of names) {
-      try {
-        const r = await fetch('/api/v2/channels/' + encodeURIComponent(n), { credentials: 'include', headers: { Accept: 'application/json' } });
-        if (r.status === 404) out[n] = false;
-        else if (r.ok) { const j = await r.json(); out[n] = !!(j && j.livestream && j.livestream.is_live !== false); }
-      } catch (e) {}
-      await new Promise((res) => setTimeout(res, 300));
-    }
-    return out;
-  })(${JSON.stringify(names)})`;
-  try {
-    const out = await w.webContents.executeJavaScript(js);
-    if (!out || !Object.keys(out).length) resetKickHelper();
-    return out || {};
-  } catch (_) {
-    resetKickHelper();
-    return {};
-  }
-}
-
 const fromApp = (e) => !!(e.senderFrame && String(e.senderFrame.url).startsWith('file://'));
+const liveStatus = createLiveStatusService((url, options) => session.fromPartition(PARTITION).fetch(url, options));
 
 function createWindow() {
   win = new BrowserWindow({
@@ -168,8 +97,7 @@ function createWindow() {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.on('render-process-gone', () => setTimeout(() => win && !win.isDestroyed() && win.reload(), 2000));
-  // A janela escondida da Kick não pode segurar o app aberto
-  win.on('closed', () => { win = null; resetKickHelper(); app.quit(); });
+  win.on('closed', () => { win = null; });
 }
 
 app.on('web-contents-created', (_e, contents) => {
@@ -225,6 +153,13 @@ app.on('web-contents-created', (_e, contents) => {
 });
 
 // MARK: IPC da interface
+
+ipcMain.handle('live-status', (e, platform, channels) => {
+  if (!win || e.sender !== win.webContents || e.senderFrame !== win.webContents.mainFrame) {
+    return {};
+  }
+  return liveStatus.check(platform, channels);
+});
 
 ipcMain.on('notify', (e, msg) => {
   if (!fromApp(e) || !msg || !Notification.isSupported()) return;
@@ -283,14 +218,6 @@ ipcMain.on('write-sample', (e, msg) => {
   } catch (_) { /* ignora */ }
 });
 
-ipcMain.handle('check-live', async (e, req) => {
-  if (!fromApp(e) || !req) return { twitch: {}, kick: {} };
-  const clean = (a) => [...new Set((Array.isArray(a) ? a : []).map((s) => String(s).toLowerCase()))]
-    .filter((s) => LIVE_NAME.test(s)).slice(0, 200);
-  const [twitch, kick] = await Promise.all([checkTwitch(clean(req.twitch)), checkKick(clean(req.kick))]);
-  return { twitch, kick };
-});
-
 ipcMain.on('open-data-dir', (e) => {
   if (fromApp(e)) shell.openPath(app.getPath('userData'));
 });
@@ -305,6 +232,15 @@ app.on('second-instance', () => {
 
 app.whenReady().then(() => {
   session.fromPartition(PARTITION).setUserAgent(CHROME_UA);
+  session.fromPartition(PARTITION).registerPreloadScript({
+    id: 'pf-game-channels', type: 'frame', filePath: path.join(__dirname, 'game-channels.js'),
+  });
+  session.fromPartition(PARTITION).registerPreloadScript({
+    id: 'pf-twitch-economy', type: 'frame', filePath: path.join(__dirname, 'twitch-economy.js'),
+  });
+  session.fromPartition(PARTITION).registerPreloadScript({
+    id: 'pf-kick-economy', type: 'frame', filePath: path.join(__dirname, 'kick-economy.js'),
+  });
   // Mac/PC não dormem com o app aberto (inclusive com a tela bloqueada)
   powerSaveBlocker.start('prevent-app-suspension');
   powerSaveBlocker.start('prevent-display-sleep');

@@ -44,8 +44,6 @@
           <option value="0">Automática</option>
         </select>
       </label>
-      <button id="auto-toggle" class="icon toggle" aria-label="Abrir sozinho os canais oficiais do Pokeidle">📡</button>
-      <span id="live-count" class="muted small num" title="Lives ao vivo / limite de lives abertas ao mesmo tempo"></span>
       <button id="mute-all">Silenciar todos</button>
       <button id="reload-all" class="icon" title="Recarregar tudo (use depois de fazer login)" aria-label="Recarregar tudo">⟳</button>
       <div class="menu">
@@ -54,7 +52,6 @@
           <button data-clear="kick">Kick</button>
           <button data-clear="twitch">Twitch</button>
           <button data-clear="all">Tudo</button>
-          <button data-clear="official">Lista de canais oficiais</button>
         </div>
       </div>
     </div>
@@ -73,15 +70,41 @@
 
   <main id="stage">
     <section id="panel-lives" class="panel">
-      <div id="grid">
-        <div id="chat-backdrop" hidden>
-          <span>Clique fora do chat ou aperte Esc para voltar à faixa</span>
-        </div>
+      <div id="live-controls">
+        <label class="inline" title="Liga ou desliga as verificações periódicas, preservando as lives abertas">
+          <input type="checkbox" id="auto-lives"> Gerenciar lives automaticamente
+        </label>
+        <label class="inline">Verificar a cada
+          <select id="live-poll" aria-label="Intervalo de verificação das lives">
+            <option value="30">30 s</option>
+            <option value="60">1 min</option>
+            <option value="120">2 min</option>
+            <option value="300">5 min</option>
+          </select>
+        </label>
+        <span id="live-summary" class="muted" role="status"></span>
+        <span class="spacer"></span>
+        <button id="check-lives" title="Busca os canais do jogo e abre os online, mesmo com o automático desligado">Verificar agora</button>
       </div>
-      <div id="empty">
-        <div class="big">▶︎▶︎</div>
-        <div>Adicione canais da Kick ou da Twitch acima</div>
-        <div class="muted small">Ex.: xqc, kick.com/canal, twitch.tv/canal</div>
+      <div id="twitch-economy-controls">
+        <label class="inline"><input type="checkbox" id="twitch-economy"> Twitch econômica (experimental)</label>
+        <label class="inline" title="Qualidade mínima e chat leve, mantendo o vídeo e a faixa de pontos"><input type="checkbox" id="kick-economy"> Kick econômica</label>
+        <span id="twitch-economy-status" role="status" class="muted"></span>
+        <button id="twitch-economy-reload" hidden>Reconectar Twitch</button>
+        <span id="twitch-economy-help" class="muted small" hidden>Um chat compartilhado, sem vídeos. Confira os bônus no Pokeidle; este modo não garante Pontos do Canal da Twitch.</span>
+        <span id="kick-economy-help" class="muted small" hidden>Kick: vídeo em qualidade mínima e mensagens ocultas na faixa de pontos. Abra o chat para consultar ou resgatar; novas mensagens voltam a aparecer.</span>
+      </div>
+      <div id="live-area">
+        <div id="grid">
+          <div id="chat-backdrop" hidden>
+            <span>Clique fora do chat ou aperte Esc para voltar à faixa</span>
+          </div>
+        </div>
+        <div id="empty">
+          <div class="big">▶︎▶︎</div>
+          <div id="empty-title">Adicione canais da Kick ou da Twitch acima</div>
+          <div id="empty-detail" class="muted small">Ex.: xqc, kick.com/canal, twitch.tv/canal</div>
+        </div>
       </div>
     </section>
 
@@ -157,6 +180,7 @@
   <div id="shield" hidden></div>
   <div id="toast" role="status" aria-live="polite" hidden></div>
 
+  <script src="live-state.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
