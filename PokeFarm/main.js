@@ -94,6 +94,21 @@ function addLive(link) {
   if (win && !win.isDestroyed()) win.webContents.send('add-live', link);
 }
 
+// Sessão de cada conta extra do Pokeidle: persist:pokefarm-acc-<id>
+const ACCOUNT_PARTITION = /^persist:pokefarm-acc-[a-z0-9-]{8,40}$/;
+const configuredSessions = new Set();
+
+/** User-agent e scripts iguais em todas as sessões (a principal e a de cada conta). */
+function setupSession(part) {
+  if (configuredSessions.has(part)) return;
+  configuredSessions.add(part);
+  const ses = session.fromPartition(part);
+  ses.setUserAgent(CHROME_UA);
+  ses.registerPreloadScript({ id: 'pf-game-channels', type: 'frame', filePath: path.join(__dirname, 'game-channels.js') });
+  ses.registerPreloadScript({ id: 'pf-twitch-economy', type: 'frame', filePath: path.join(__dirname, 'twitch-economy.js') });
+  ses.registerPreloadScript({ id: 'pf-kick-economy', type: 'frame', filePath: path.join(__dirname, 'kick-economy.js') });
+}
+
 const fromApp = (e) => !!(e.senderFrame && String(e.senderFrame.url).startsWith('file://'));
 const liveStatus = createLiveStatusService((url, options) => session.fromPartition(PARTITION).fetch(url, options));
 
@@ -134,7 +149,10 @@ app.on('web-contents-created', (_e, contents) => {
     webPreferences.contextIsolation = true;
     webPreferences.sandbox = true;
     webPreferences.backgroundThrottling = false;
-    webPreferences.partition = PARTITION;
+    // Contas extras do Pokeidle usam sessão própria (login separado); o resto, a compartilhada
+    const part = ACCOUNT_PARTITION.test(params.partition || '') ? params.partition : PARTITION;
+    setupSession(part);
+    webPreferences.partition = part;
     if (!/^https:\/\//.test(params.src || '')) event.preventDefault();
   });
 
@@ -160,7 +178,7 @@ app.on('web-contents-created', (_e, contents) => {
         if (link) { addLive(link); return { action: 'deny' }; }
       }
       if (url === 'about:blank' && isGame(contents)) {
-        return { action: 'allow', overrideBrowserWindowOptions: { show: false, webPreferences: { partition: PARTITION, contextIsolation: true, sandbox: true, nodeIntegration: false } } };
+        return { action: 'allow', overrideBrowserWindowOptions: { show: false, webPreferences: { session: contents.session, contextIsolation: true, sandbox: true, nodeIntegration: false } } };
       }
       if (!/^https:\/\//.test(url)) return { action: 'deny' };
       return {
@@ -170,7 +188,8 @@ app.on('web-contents-created', (_e, contents) => {
           height: 760,
           title: 'Entrar',
           autoHideMenuBar: true,
-          webPreferences: { partition: PARTITION, contextIsolation: true, sandbox: true, nodeIntegration: false },
+          // Mesma sessão da página que abriu: o login de cada conta fica na conta certa
+          webPreferences: { session: contents.session, contextIsolation: true, sandbox: true, nodeIntegration: false },
         },
       };
     });
@@ -253,6 +272,13 @@ ipcMain.on('write-sample', (e, msg) => {
   } catch (_) { /* ignora */ }
 });
 
+// Conta removida: apaga o login dela (só contas extras; a principal é a mesma das lives)
+ipcMain.handle('clear-account', async (e, id) => {
+  const part = `persist:pokefarm-acc-${String(id)}`;
+  if (!fromApp(e) || !ACCOUNT_PARTITION.test(part)) return false;
+  try { await session.fromPartition(part).clearStorageData(); return true; } catch (_) { return false; }
+});
+
 ipcMain.on('open-data-dir', (e) => {
   if (fromApp(e)) shell.openPath(app.getPath('userData'));
 });
@@ -266,16 +292,7 @@ app.on('second-instance', () => {
 });
 
 app.whenReady().then(() => {
-  session.fromPartition(PARTITION).setUserAgent(CHROME_UA);
-  session.fromPartition(PARTITION).registerPreloadScript({
-    id: 'pf-game-channels', type: 'frame', filePath: path.join(__dirname, 'game-channels.js'),
-  });
-  session.fromPartition(PARTITION).registerPreloadScript({
-    id: 'pf-twitch-economy', type: 'frame', filePath: path.join(__dirname, 'twitch-economy.js'),
-  });
-  session.fromPartition(PARTITION).registerPreloadScript({
-    id: 'pf-kick-economy', type: 'frame', filePath: path.join(__dirname, 'kick-economy.js'),
-  });
+  setupSession(PARTITION);
   // Mac/PC não dormem com o app aberto (inclusive com a tela bloqueada)
   powerSaveBlocker.start('prevent-app-suspension');
   powerSaveBlocker.start('prevent-display-sleep');

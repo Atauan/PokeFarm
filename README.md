@@ -22,6 +22,7 @@ Várias lives da **Kick** e da **Twitch** numa tela só, sem som, farmando ponto
 - **Twitch econômica (Swift e Electron, experimental):** substitui os vídeos e chats individuais por um único chat compartilhado, sem renderizar as mensagens. Voltado a testar os bônus do Pokeidle com menos consumo; não garante Pontos do Canal da Twitch.
 - **Kick econômica (Swift e Electron):** usa a qualidade mínima e reduz mensagens e animações dos chats recolhidos, mantendo os vídeos, a faixa de pontos e os eventos de saldo e resgate.
 - **Abas Lives / Pokeidle / Alertas:** trocar de aba não para nada.
+- **Várias contas do Pokeidle:** o botão **+** cria uma aba nova do jogo, com login separado. Dê um nome para cada conta na barra da aba; todas ficam rodando ao mesmo tempo, mesmo as que não estão na tela.
 - **Alertas do mercado do Pokeidle:** regras por nome, preço máximo (coins/gemas), % abaixo da média e "só shiny", com notificação do sistema. Só avisa, nunca compra.
 - **Rodar 24h:** o computador não dorme com o app aberto, inclusive com a tela bloqueada; live parada é recarregada; página travada é recarregada; sem internet, tenta de novo a cada 30 s.
 - **Skeleton de carregamento** no lugar da tela branca.

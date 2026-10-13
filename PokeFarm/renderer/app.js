@@ -37,12 +37,19 @@ const S = {
   ignoredGameChannels: load('pf.ignoredGameChannels', []),
   livePoll: [30, 60, 120, 300].includes(load('pf.livePoll', 60)) ? load('pf.livePoll', 60) : 60,
   tab: load('pf.tab', 'lives'),
+  // Contas do Pokeidle: a primeira usa a sessão das lives (mantém o login que já existia)
+  accounts: (() => {
+    const list = load('pf.accounts', null);
+    return Array.isArray(list) && list.length ? list : [{ id: 'main', name: 'Conta 1', main: true }];
+  })(),
+  gameAccount: load('pf.gameAccount', 'main'),
   frames: load('pf.frames', {}),      // id -> [x, y, largura, altura] em fração da área
   target: 'kick',
 };
 function persist() {
   save('pf.kick', S.kick); save('pf.twitch', S.twitch); save('pf.columns', S.columns);
   save('pf.showChat', S.showChat); save('pf.quality', S.quality); save('pf.tab', S.tab); save('pf.frames', S.frames);
+  save('pf.accounts', S.accounts); save('pf.gameAccount', S.gameAccount);
   save('pf.autoLives', S.autoLives); save('pf.livePoll', S.livePoll);
   save('pf.twitchEconomy', S.twitchEconomy);
   save('pf.kickEconomy', S.kickEconomy);
@@ -149,7 +156,7 @@ function pumpLoadQueue() {
 
 function makeWebview(src, opts = {}) {
   const wv = document.createElement('webview');
-  wv.setAttribute('partition', PARTITION);
+  wv.setAttribute('partition', opts.partition || PARTITION);
   wv.setAttribute('allowpopups', '');
   wv.setAttribute('webpreferences', 'backgroundThrottling=no');
   wv.__pfSrc = src;
@@ -607,24 +614,78 @@ setInterval(() => {
 // ---------------- Jogo ----------------
 
 const GAME_URL = 'https://pokeidle.io/app';
+// Aba que lê o mercado (a primeira conta: o mercado é o mesmo para todas)
 let game = null;
+const games = new Map();   // id da conta -> { pane, wv }
 
+const accountPartition = (a) => (a.main ? PARTITION : `persist:pokefarm-acc-${a.id}`);
+const currentAccount = () => S.accounts.find((a) => a.id === S.gameAccount) || S.accounts[0];
+
+/** Cria/remove as abas do jogo para bater com a lista de contas. Todas ficam rodando. */
 function setupGame() {
-  game = makeWebview(GAME_URL, {
-    muted: false,
-    now: true,
-    skeleton: 'game',
-    onReady: (wv) => wv.executeJavaScript(`window.__pfPoll = ${Number(M.poll) || 60}`).catch(() => {}),
+  for (const [id, g] of games) {
+    if (!S.accounts.some((a) => a.id === id)) { g.pane.remove(); games.delete(id); }
+  }
+  S.accounts.forEach((a, i) => {
+    const market = i === 0;
+    const g = games.get(a.id);
+    if (g && g.market === market) return;
+    if (g) { g.pane.remove(); games.delete(a.id); }   // virou (ou deixou de ser) a aba do mercado
+    const wv = makeWebview(GAME_URL, {
+      muted: false,
+      now: true,
+      skeleton: 'game',
+      partition: accountPartition(a),
+      onReady: (w) => w.executeJavaScript(`window.__pfPoll = ${Number(M.poll) || 60}`).catch(() => {}),
+    });
+    wv.addEventListener('ipc-message', (e) => {
+      if (e.channel === 'market' && market) onMarket(e.args[0]);
+      if (e.channel === 'game-channels') {
+        try {
+          if (/(^|\.)pokeidle\.io$/.test(new URL(wv.getURL()).hostname)) receiveGameChannels(e.args[0]);
+        } catch (_) { /* a página já foi fechada/navegou */ }
+      }
+    });
+    const pane = el('div', { class: 'game-pane', 'data-account': a.id }, wv, wv.__skeleton);
+    $('#panel-game').append(pane);
+    games.set(a.id, { pane, wv, market });
   });
-  game.addEventListener('ipc-message', (e) => {
-    if (e.channel === 'market') onMarket(e.args[0]);
-    if (e.channel === 'game-channels') {
-      try {
-        if (/(^|\.)pokeidle\.io$/.test(new URL(game.getURL()).hostname)) receiveGameChannels(e.args[0]);
-      } catch (_) { /* a página já foi fechada/navegou */ }
-    }
-  });
-  $('#panel-game').append(game, game.__skeleton);
+  game = games.get(S.accounts[0].id)?.wv || null;
+  if (!S.accounts.some((a) => a.id === S.gameAccount)) S.gameAccount = S.accounts[0].id;
+}
+
+function renderAccountTabs() {
+  $('#account-tabs').replaceChildren(...S.accounts.map((a) => el('button', {
+    class: 'acc', role: 'tab', 'data-tab': 'game', 'data-account': a.id, text: a.name || 'Sem nome', title: a.name || 'Sem nome',
+    onclick: () => { S.gameAccount = a.id; setTab('game'); },
+  })));
+}
+
+function addAccount() {
+  let n = S.accounts.length + 1;
+  while (S.accounts.some((a) => a.name === `Conta ${n}`)) n += 1;
+  const a = { id: uid(), name: `Conta ${n}` };
+  S.accounts.push(a);
+  S.gameAccount = a.id;
+  setupGame();
+  renderAccountTabs();
+  setTab('game');
+}
+
+async function removeAccount() {
+  const a = currentAccount();
+  if (!a || S.accounts.length <= 1) return;
+  const msg = a.main
+    ? `Remover "${a.name}"? A aba fecha. O login continua salvo, porque é o mesmo das lives.`
+    : `Remover "${a.name}"? A aba fecha e o login desta conta no Pokeidle é apagado do app.`;
+  if (!window.confirm(msg)) return;
+  S.accounts = S.accounts.filter((x) => x.id !== a.id);
+  S.gameAccount = S.accounts[0].id;
+  setupGame();
+  renderAccountTabs();
+  setTab('game');
+  // Espera a aba fechar antes de apagar o login
+  if (!a.main) setTimeout(() => { window.pf.clearAccount(a.id).catch(() => {}); }, 2000);
 }
 
 // ---------------- Alertas do mercado ----------------
@@ -801,11 +862,18 @@ function setTab(tab) {
   if (!['lives', 'game', 'alerts'].includes(tab)) tab = 'lives';
   S.tab = tab;
   persist();
-  $$('#tabs button').forEach((b) => {
-    const on = b.dataset.tab === tab;
+  const acc = currentAccount();
+  $$('#tabs button[data-tab]').forEach((b) => {
+    const on = b.dataset.tab === tab && (tab !== 'game' || b.dataset.account === acc.id);
     b.classList.toggle('on', on);
     b.setAttribute('aria-selected', String(on));
   });
+  games.forEach((g, id) => g.pane.classList.toggle('on', id === acc.id));
+  if (tab === 'game') {
+    // Só reescreve se mudou (senão o cursor pula para o fim enquanto você digita)
+    if ($('#account-name').value !== (acc.name || '')) $('#account-name').value = acc.name || '';
+    $('#account-remove').disabled = S.accounts.length <= 1;
+  }
   $('#panel-lives').classList.toggle('active', tab === 'lives');
   $('#panel-game').classList.toggle('active', tab === 'game');
   $('#panel-alerts').classList.toggle('active', tab === 'alerts');
@@ -833,7 +901,17 @@ function setupBar() {
     persist(); scheduleLiveChecks();
   });
   $('#check-lives').addEventListener('click', () => { void checkLivesNow(); });
-  $$('#tabs button').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
+  $$('#tabs button[data-tab="lives"], #tabs button[data-tab="alerts"]')
+    .forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
+  $('#add-account').addEventListener('click', addAccount);
+  $('#account-remove').addEventListener('click', () => { void removeAccount(); });
+  $('#account-name').addEventListener('input', (e) => {
+    const a = currentAccount();
+    a.name = e.target.value.replace(/\s+/g, ' ').slice(0, 30);
+    persist();
+    renderAccountTabs();
+    setTab('game');
+  });
   $$('#target button').forEach((b) => b.addEventListener('click', () => setTarget(b.dataset.target)));
 
   const input = $('#channel-input');
@@ -908,7 +986,10 @@ function setupBar() {
   }));
   document.addEventListener('click', () => $$('.menu').forEach((x) => x.classList.remove('open')));
 
-  $('#game-reload').addEventListener('click', () => game && reloadWebview(game));
+  $('#game-reload').addEventListener('click', () => {
+    const g = games.get(currentAccount().id);
+    if (g) reloadWebview(g.wv);
+  });
   $('#game-edge').addEventListener('click', () => window.pf.openEdge(GAME_URL));
 
   $('#alerts-on').addEventListener('change', (e) => { M.enabled = e.target.checked; save('pf.alertsOn', M.enabled); });
@@ -956,6 +1037,7 @@ function addFromGame(link) {
 setupBar();
 setTarget('kick');
 setupGame();
+renderAccountTabs();
 importGameChannels();
 scheduleLiveChecks();
 setTab(S.tab);

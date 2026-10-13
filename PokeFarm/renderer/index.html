@@ -11,7 +11,8 @@
   <header id="bar">
     <div class="seg" id="tabs" role="tablist" aria-label="Abas">
       <button data-tab="lives" role="tab">Lives</button>
-      <button data-tab="game" role="tab">Pokeidle</button>
+      <span id="account-tabs"></span>
+      <button id="add-account" class="add-tab" title="Nova conta do Pokeidle (aba com login separado)" aria-label="Adicionar conta do Pokeidle">＋</button>
       <button data-tab="alerts" role="tab">Alertas</button>
     </div>
     <div class="sep"></div>
@@ -57,10 +58,13 @@
     </div>
 
     <div class="bar-part" id="bar-game" hidden>
-      <span class="muted">pokeidle.io</span>
+      <label class="inline" title="Nome desta conta (aparece na aba)">👤
+        <input id="account-name" type="text" maxlength="30" aria-label="Nome da conta" placeholder="Nome da conta">
+      </label>
       <span class="spacer"></span>
       <button id="game-reload">⟳ Recarregar jogo</button>
       <button id="game-edge">🌐 Abrir no Edge</button>
+      <button id="account-remove" title="Fecha esta aba e apaga o login dela">🗑 Remover conta</button>
     </div>
 
     <div class="bar-part" id="bar-alerts" hidden>

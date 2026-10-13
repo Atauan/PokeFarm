@@ -35,6 +35,41 @@ enum Platform: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// Uma conta do Pokeidle rodando numa aba própria, com login separado.
+struct GameAccount: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var name: String
+    /// Conta original: usa o mesmo armazenamento das lives (mantém o login que já existia)
+    var usesDefaultStore = false
+}
+
+/// Armazenamento (cookies/login) de cada conta.
+enum GameStore {
+    /// Logins separados e salvos por conta exigem macOS 14+
+    static var separateLoginsSupported: Bool {
+        if #available(macOS 14.0, *) { return true }
+        return false
+    }
+
+    static func dataStore(_ a: GameAccount) -> WKWebsiteDataStore {
+        if a.usesDefaultStore { return .default() }
+        if #available(macOS 14.0, *) { return WKWebsiteDataStore(forIdentifier: a.id) }
+        return .nonPersistent()   // macOS 13: separado, mas o login some ao fechar o app
+    }
+
+    /// Apaga o login da conta. Espera a aba fechar antes (o WebKit não apaga armazenamento em uso).
+    static func remove(_ a: GameAccount) {
+        guard !a.usesDefaultStore else { return }
+        if #available(macOS 14.0, *) {
+            let id = a.id
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                try? await WKWebsiteDataStore.remove(forIdentifier: id)
+            }
+        }
+    }
+}
+
 enum AppTab: String, CaseIterable, Identifiable {
     case lives, game, alerts
     var id: String { rawValue }
@@ -102,7 +137,57 @@ final class Store: ObservableObject {
     @Published var tab: AppTab = AppTab(rawValue: UserDefaults.standard.string(forKey: "tab") ?? "") ?? .lives {
         didSet { UserDefaults.standard.set(tab.rawValue, forKey: "tab") }
     }
-    @Published var gameReload = 0
+    // MARK: Contas do Pokeidle (uma aba e um login separado para cada)
+
+    @Published var accounts: [GameAccount] = Store.loadAccounts() {
+        didSet { if let d = try? JSONEncoder().encode(accounts) { UserDefaults.standard.set(d, forKey: "gameAccounts") } }
+    }
+    /// Conta mostrada quando a aba ativa é a do jogo
+    @Published var gameAccountID: UUID = {
+        let saved = UserDefaults.standard.string(forKey: "gameAccountID").flatMap(UUID.init(uuidString:))
+        let list = Store.loadAccounts()
+        return list.first(where: { $0.id == saved })?.id ?? list[0].id
+    }() {
+        didSet { UserDefaults.standard.set(gameAccountID.uuidString, forKey: "gameAccountID") }
+    }
+    /// Contador de recarga por conta
+    @Published var gameReloads: [UUID: Int] = [:]
+
+    var currentAccount: GameAccount? { accounts.first { $0.id == gameAccountID } }
+
+    private static func loadAccounts() -> [GameAccount] {
+        if let d = UserDefaults.standard.data(forKey: "gameAccounts"),
+           let list = try? JSONDecoder().decode([GameAccount].self, from: d), !list.isEmpty { return list }
+        // Primeira vez: a conta que já existia continua com o login de antes
+        return [GameAccount(name: "Conta 1", usesDefaultStore: true)]
+    }
+
+    func addAccount() {
+        var n = accounts.count + 1
+        while accounts.contains(where: { $0.name == "Conta \(n)" }) { n += 1 }
+        let a = GameAccount(name: "Conta \(n)")
+        accounts.append(a)
+        gameAccountID = a.id
+        tab = .game
+    }
+
+    func renameAccount(_ id: UUID, _ name: String) {
+        guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
+        let clean = String(name.replacingOccurrences(of: "\n", with: " ").prefix(30))
+        if accounts[i].name != clean { accounts[i].name = clean }
+    }
+
+    /// Fecha a aba e apaga o login da conta (a conta original, que divide o login da Twitch/Kick, só fecha).
+    func removeAccount(_ id: UUID) {
+        guard accounts.count > 1, let a = accounts.first(where: { $0.id == id }) else { return }
+        accounts.removeAll { $0.id == id }
+        gameReloads[id] = nil
+        if gameAccountID == id { gameAccountID = accounts[0].id }
+        GameStore.remove(a)
+    }
+
+    func reloadGame(_ id: UUID) { gameReloads[id, default: 0] += 1 }
+
     @Published var twitchEconomy: Bool = UserDefaults.standard.bool(forKey: "twitchEconomy") {
         didSet { UserDefaults.standard.set(twitchEconomy, forKey: "twitchEconomy") }
     }
@@ -322,9 +407,9 @@ enum Web {
     }
 
     /// Todos usam o mesmo armazenamento: o login feito em qualquer janela vale para todas.
-    static func config() -> WKWebViewConfiguration {
+    static func config(store: WKWebsiteDataStore = .default()) -> WKWebViewConfiguration {
         let cfg = WKWebViewConfiguration()
-        cfg.websiteDataStore = .default()
+        cfg.websiteDataStore = store
         cfg.mediaTypesRequiringUserActionForPlayback = []
         if #available(macOS 14.0, *) {
             // Não pausar/desacelerar as lives quando a janela estiver em segundo plano
@@ -525,7 +610,7 @@ final class Recovery: NSObject, WKNavigationDelegate {
     /// No jogo, link de canal da Kick/Twitch não navega: vira um bloco na aba Lives.
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        let fromGame = webView === MarketWatcher.shared.gameWebView
+        let fromGame = MarketWatcher.shared.isGame(webView)
         let gamePopup = LiveLink.gamePopups.contains(webView)
         if fromGame || gamePopup,
            navigationAction.targetFrame?.isMainFrame ?? true,
@@ -609,14 +694,14 @@ final class Popups: NSObject, WKUIDelegate, NSWindowDelegate {
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         // Botão/link de live no jogo (abre em nova aba): adiciona na aba Lives em vez de abrir janela
-        if webView === MarketWatcher.shared.gameWebView,
+        if MarketWatcher.shared.isGame(webView),
            let link = LiveLink.channelURL(navigationAction.request.url) {
             LiveLink.add(link)
             return nil
         }
         let wv = makeWindow(configuration: configuration, title: "Entrar")
         // Pop-up aberto pelo jogo em branco e depois mandado para a live: o Recovery intercepta
-        if webView === MarketWatcher.shared.gameWebView { LiveLink.gamePopups.add(wv) }
+        if MarketWatcher.shared.isGame(webView) { LiveLink.gamePopups.add(wv) }
         return wv
     }
 
@@ -1279,7 +1364,16 @@ final class MarketWatcher: NSObject, ObservableObject, WKScriptMessageHandler, U
     @Published var seen: [SeenItem] = []
     @Published var totalSeen = 0
 
+    /// Aba que lê o mercado (a primeira conta: o mercado é o mesmo para todas)
     weak var gameWebView: WKWebView?
+    /// Abas de todas as contas do jogo
+    let gameWebViews = NSHashTable<WKWebView>.weakObjects()
+
+    func isGame(_ wv: WKWebView?) -> Bool {
+        guard let wv else { return false }
+        return wv === gameWebView || gameWebViews.contains(wv)
+    }
+
     private var alerted = Set<String>()
     private var history: [String: [Double]] = [:]   // "nome|moeda" -> últimos preços
     private var samplesWritten: [String: Int] = [:]
@@ -1754,7 +1848,7 @@ final class GameChannelWatcher: NSObject, WKScriptMessageHandler {
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.frameInfo.isMainFrame, message.webView === MarketWatcher.shared.gameWebView,
+        guard message.frameInfo.isMainFrame, MarketWatcher.shared.isGame(message.webView),
               message.frameInfo.securityOrigin.host == "pokeidle.io" || message.frameInfo.securityOrigin.host.hasSuffix(".pokeidle.io"),
               let rows = message.body as? [[String: Any]] else { return }
         let channels = rows.prefix(200).compactMap { row -> GameChannel? in
@@ -1766,24 +1860,40 @@ final class GameChannelWatcher: NSObject, WKScriptMessageHandler {
     }
 }
 
+/// Uma aba do jogo, com o login da conta dela.
 struct GameView: NSViewRepresentable {
+    let account: GameAccount
+    /// Só uma aba lê o mercado (evita consultar o servidor em dobro)
+    let readsMarket: Bool
     let reloadToken: Int
 
     final class Coordinator { var loaded: Int? }
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> WKWebView {
-        let wv = Web.make()
+        let wv = Web.make(Web.config(store: GameStore.dataStore(account)))
         Skeleton.attach(wv, style: .game)
         wv.allowsBackForwardNavigationGestures = true
         let ucc = wv.configuration.userContentController
         ucc.addUserScript(Web.keepAliveScript())
         if let script = GameChannelWatcher.shared.script() { ucc.addUserScript(script) }
         ucc.add(GameChannelWatcher.shared, name: "pfGameChannels")
-        ucc.addUserScript(MarketWatcher.shared.script())
-        ucc.add(MarketWatcher.shared, name: "pf")
-        MarketWatcher.shared.gameWebView = wv
+        MarketWatcher.shared.gameWebViews.add(wv)
+        if readsMarket {
+            ucc.addUserScript(MarketWatcher.shared.script())
+            ucc.add(MarketWatcher.shared, name: "pf")
+            MarketWatcher.shared.gameWebView = wv
+        }
         return wv
+    }
+
+    static func dismantleNSView(_ wv: WKWebView, coordinator: Coordinator) {
+        wv.stopLoading()
+        let ucc = wv.configuration.userContentController
+        ucc.removeScriptMessageHandler(forName: "pfGameChannels")
+        ucc.removeScriptMessageHandler(forName: "pf")
+        MarketWatcher.shared.gameWebViews.remove(wv)
+        if MarketWatcher.shared.gameWebView === wv { MarketWatcher.shared.gameWebView = nil }
     }
 
     func updateNSView(_ wv: WKWebView, context: Context) {
@@ -2161,12 +2271,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Picker("", selection: $store.tab) {
-                    ForEach(AppTab.allCases) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 240)
+                tabStrip
                 Divider().frame(height: 20)
                 switch store.tab {
                 case .lives: livesBar
@@ -2202,9 +2307,16 @@ struct ContentView: View {
                 .zIndex(store.tab == .lives ? 1 : 0)
                 .allowsHitTesting(store.tab == .lives)
 
-                GameView(reloadToken: store.gameReload)
-                    .zIndex(store.tab == .game ? 1 : 0)
-                    .allowsHitTesting(store.tab == .game)
+                // Todas as contas ficam rodando; só a selecionada vem para a frente
+                ForEach(store.accounts) { a in
+                    let shown = store.tab == .game && store.gameAccountID == a.id
+                    let market = a.id == store.accounts.first?.id
+                    GameView(account: a, readsMarket: market, reloadToken: store.gameReloads[a.id] ?? 0)
+                        .id("\(a.id.uuidString)|\(market)")
+                        .zIndex(shown ? 1 : 0)
+                        .allowsHitTesting(shown)
+                        .accessibilityHidden(!shown)
+                }
 
                 if store.tab == .alerts {
                     AlertsView()
@@ -2267,15 +2379,83 @@ struct ContentView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { if toastID == id { toast = nil } }
     }
 
+    // MARK: Abas (Lives, uma por conta do Pokeidle, Alertas)
+
+    private var tabStrip: some View {
+        HStack(spacing: 2) {
+            tabButton("Lives", selected: store.tab == .lives) { store.tab = .lives }
+            ForEach(store.accounts) { a in
+                tabButton(a.name.isEmpty ? "Sem nome" : a.name, icon: "gamecontroller.fill",
+                          selected: store.tab == .game && store.gameAccountID == a.id) {
+                    store.gameAccountID = a.id
+                    store.tab = .game
+                }
+            }
+            Button { store.addAccount() } label: { Image(systemName: "plus") }
+                .buttonStyle(.borderless)
+                .padding(.horizontal, 6)
+                .help("Nova conta do Pokeidle (aba com login separado)")
+                .accessibilityLabel("Adicionar conta do Pokeidle")
+            tabButton("Alertas", selected: store.tab == .alerts) { store.tab = .alerts }
+        }
+        .padding(2)
+        .background(RoundedRectangle(cornerRadius: 7).stroke(Color.secondary.opacity(0.35)))
+    }
+
+    private func tabButton(_ title: String, icon: String? = nil, selected: Bool,
+                           action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                if let icon { Image(systemName: icon).font(.system(size: 9)) }
+                Text(title).lineLimit(1)
+            }
+            .font(.system(size: 12, weight: selected ? .semibold : .regular))
+            .padding(.horizontal, 10).padding(.vertical, 3)
+            .frame(maxWidth: 160)
+            .foregroundStyle(selected ? Color.white : Color.primary)
+            .background(RoundedRectangle(cornerRadius: 5).fill(selected ? Color.accentColor : Color.clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    @State private var confirmRemove = false
+
     private var gameBar: some View {
-        HStack(spacing: 8) {
-            Text("pokeidle.io").foregroundStyle(.secondary)
+        let id = store.gameAccountID
+        let account = store.currentAccount
+        return HStack(spacing: 8) {
+            Image(systemName: "person.crop.circle").foregroundStyle(.secondary)
+            TextField("Nome da conta", text: Binding(
+                get: { store.currentAccount?.name ?? "" },
+                set: { store.renameAccount(id, $0) }))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 200)
+                .help("Nome desta conta (aparece na aba)")
+            if !GameStore.separateLoginsSupported && account?.usesDefaultStore == false {
+                Text("No macOS 13 o login desta conta some ao fechar o app")
+                    .font(.caption).foregroundStyle(.orange)
+            }
             Spacer()
-            Button { store.gameReload += 1 } label: {
+            Button { store.reloadGame(id) } label: {
                 Label("Recarregar jogo", systemImage: "arrow.clockwise")
             }
             Button { Edge.open(Game.url) } label: {
                 Label("Abrir no Edge", systemImage: "globe")
+            }
+            Button(role: .destructive) { confirmRemove = true } label: {
+                Label("Remover conta", systemImage: "trash")
+            }
+            .disabled(store.accounts.count <= 1)
+            .help(store.accounts.count <= 1 ? "Precisa ter pelo menos uma conta" : "Fecha esta aba e apaga o login dela")
+            .confirmationDialog("Remover \"\(account?.name ?? "")\"?", isPresented: $confirmRemove) {
+                Button("Remover conta", role: .destructive) { store.removeAccount(id) }
+                Button("Cancelar", role: .cancel) {}
+            } message: {
+                Text(account?.usesDefaultStore == true
+                     ? "A aba fecha. O login dela continua salvo, porque é o mesmo das lives da Twitch e Kick."
+                     : "A aba fecha e o login desta conta no Pokeidle é apagado do app.")
             }
         }
     }
