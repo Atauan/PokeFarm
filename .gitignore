@@ -12,3 +12,10 @@ PokeFarm/assets/*
 
 # IDE
 .idea/
+
+# Documentação interna
+docs/
+
+# Artefatos locais
+_metadata/
+icons/
