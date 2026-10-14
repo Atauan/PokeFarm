@@ -25,6 +25,7 @@ Várias lives da **Kick** e da **Twitch** numa tela só, sem som, farmando ponto
 - **Abas Lives / Pokeidle / Alertas:** trocar de aba não para nada.
 - **Várias contas do Pokeidle:** o botão **+** cria uma aba nova do jogo, com login separado. Dê um nome para cada conta na barra da aba; todas ficam rodando ao mesmo tempo, mesmo as que não estão na tela.
 - **Alertas do mercado do Pokeidle:** regras por nome, preço máximo (coins/gemas), % abaixo da média e "só shiny", com notificação do sistema. Só avisa, nunca compra.
+- **Extensão /hunt no Pokeidle (Electron):** integra o analisador de rotas de caça por XP/h e ouro/h diretamente acima do Pokémon em campo no Pokeidle, com chave liga/desliga na barra do jogo.
 - **Rodar 24h:** o computador não dorme com o app aberto, inclusive com a tela bloqueada; live parada é recarregada; página travada é recarregada; sem internet, tenta de novo a cada 30 s.
 - **Minimizar ao fechar (Swift e Electron):** fechar a janela mantém o PokeFarm no tray do Windows ou na barra de menus do macOS. Lives, jogo, automações, alertas e sons continuam ativos, respeitando as opções de som de cada página. Um clique esquerdo abre o resumo da sessão; dois cliques restauram a janela. Clique direito oferece **Sobre** e **Sair**.
 - **Resumo no tray:** seletor de conta, capturas, shinies vistos/capturados, ouro, XP, abates, custos estimados, boosts/bônus ativos e drops raros. Usa os dados de **Sessão** e **Capturas** do próprio Pokeidle e acompanha os resets independentes feitos no jogo.
@@ -223,6 +224,7 @@ O recurso só funciona nas instalações que já incluam este verificador. Vers�
 │   ├── game-channels.js   # leitor das listas oficiais, compartilhado com o app Swift
 │   ├── twitch-economy.js  # chat Twitch compartilhado, usado nas duas versões
 │   ├── kick-economy.js    # chat Kick leve, preservando pontos e reprodução
+│   ├── pokeidle-hunt.js   # injeção do addon /hunt for PokeIdle
 │   ├── preload.js         # ponte segura entre interface e sistema
 │   ├── webview-preload.js # scripts das lives, chats e leitura do mercado
 │   ├── renderer/          # interface, incluindo o modal em updates.js

@@ -40,6 +40,7 @@
       "kick-economy.js",
       "preload.js",
       "webview-preload.js",
+      "pokeidle-hunt.js",
       "renderer/**",
       "assets/**",
       "package.json"
