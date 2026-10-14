@@ -4,6 +4,7 @@
   "version": "3.0.0",
   "description": "Lives da Kick e Twitch + Pokeidle rodando 24h, com alertas do mercado",
   "homepage": "https://github.com/Atauan/PokeFarm",
+  "desktopName": "pokefarm.desktop",
   "main": "main.js",
   "author": {
     "name": "PokeFarm",
@@ -110,7 +111,6 @@
       "category": "Game",
       "icon": "build/icon.png",
       "maintainer": "PokeFarm <pokefarm@users.noreply.github.com>",
-      "desktopName": "pokefarm",
       "syncDesktopName": true
     },
     "appImage": {
