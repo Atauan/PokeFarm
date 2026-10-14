@@ -149,7 +149,7 @@ function cleanChannel(raw) {
 }
 
 function addChannels(text, targetAccountId) {
-  const accId = targetAccountId || S.liveProfile || 'main';
+  const accId = targetAccountId || (S.liveProfile && S.liveProfile !== 'all' ? S.liveProfile : (currentAccount()?.id || 'main'));
   for (const raw of String(text).split(/[,\s]+/)) {
     const c = cleanChannel(raw);
     if (!c) continue;
@@ -435,10 +435,14 @@ function syncTiles() {
   const filter = S.livePlatformFilter || 'both';
   const matchesPlatform = (p) => filter === 'both' || filter === p;
 
+  const profileFilter = S.liveProfile || 'all';
+  const matchesProfile = (accId) => profileFilter === 'all' || profileFilter === accId;
+
   // Um canal só abre se estiver online, pertencer à plataforma permitida E o perfil a que pertence estiver ativo
   const open = saved.filter((e) => {
     if (!matchesPlatform(e.p)) return false;
     const accId = e.i.accountId || 'main';
+    if (!matchesProfile(accId)) return false;
     const isActive = S.profileLivesActive[accId] !== false;
     return isActive && liveStates.get(e.i.id)?.open;
   });
@@ -1258,8 +1262,7 @@ function setupBar() {
   if (profileSel) {
     profileSel.addEventListener('change', (e) => {
       S.liveProfile = e.target.value;
-      const activeBox = $('#profile-lives-active');
-      if (activeBox) activeBox.checked = S.profileLivesActive[S.liveProfile] !== false;
+      updateProfileActiveUi();
       persist();
       syncTiles();
     });
@@ -1267,9 +1270,12 @@ function setupBar() {
 
   const profileActiveBox = $('#profile-lives-active');
   if (profileActiveBox) {
-    profileActiveBox.checked = S.profileLivesActive[S.liveProfile] !== false;
     profileActiveBox.addEventListener('change', (e) => {
-      S.profileLivesActive[S.liveProfile] = e.target.checked;
+      if (S.liveProfile && S.liveProfile !== 'all') {
+        S.profileLivesActive[S.liveProfile] = e.target.checked;
+      } else {
+        S.accounts.forEach(a => { S.profileLivesActive[a.id] = e.target.checked; });
+      }
       persist();
       syncTiles();
     });
@@ -1409,14 +1415,33 @@ function setupBar() {
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') collapseChat(); });
 }
 
+function updateProfileActiveUi() {
+  const activeBox = $('#profile-lives-active');
+  const labelSpan = $('#profile-active-label');
+  if (!activeBox) return;
+  if (!S.liveProfile || S.liveProfile === 'all') {
+    const allActive = S.accounts.every(a => S.profileLivesActive[a.id] !== false);
+    activeBox.checked = allActive;
+    if (labelSpan) labelSpan.textContent = 'Todas as contas ativas';
+  } else {
+    const acc = S.accounts.find(a => a.id === S.liveProfile);
+    activeBox.checked = S.profileLivesActive[S.liveProfile] !== false;
+    if (labelSpan) labelSpan.textContent = `Lives de ${acc?.name || 'Conta'} ativas`;
+  }
+}
+
 function renderLiveProfileSelector() {
   const sel = $('#live-profile');
   if (!sel) return;
-  sel.replaceChildren(...S.accounts.map(a => el('option', { value: a.id, text: a.name || 'Conta' })));
-  if (!S.accounts.some(a => a.id === S.liveProfile)) S.liveProfile = S.accounts[0].id;
-  sel.value = S.liveProfile;
-  const activeBox = $('#profile-lives-active');
-  if (activeBox) activeBox.checked = S.profileLivesActive[S.liveProfile] !== false;
+  sel.replaceChildren(
+    el('option', { value: 'all', text: 'Todas as contas' }),
+    ...S.accounts.map(a => el('option', { value: a.id, text: a.name || 'Conta' }))
+  );
+  if (S.liveProfile !== 'all' && !S.accounts.some(a => a.id === S.liveProfile)) {
+    S.liveProfile = 'all';
+  }
+  sel.value = S.liveProfile || 'all';
+  updateProfileActiveUi();
 }
 
 function renderMarketAccountSelector() {
