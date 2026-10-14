@@ -8,13 +8,9 @@ function installKickEconomy() {
     if (window.__pfApplyKickQuality) return;
     let timer = null;
     let requested = 0;
-    let cachedApi = null;
-    let cachedVideo = null;
-    let retries = 0;
     const findPlayer = () => {
       const video = document.querySelector('video');
-      if (!video) { cachedApi = null; cachedVideo = null; return null; }
-      if (cachedApi && cachedVideo === video) return cachedApi;
+      if (!video) return null;
       // O embed atual mantém a API IVS em um useRef do componente que contém o vídeo.
       // Percorre apenas essa cadeia e seus hooks, sem varrer estado da conta ou toda a página.
       const key = Object.keys(video).find(name => name.startsWith('__reactFiber$'));
@@ -24,11 +20,7 @@ function installKickEconomy() {
         for (let index = 0; hook && index < 80; index++, hook = hook.next) {
           const api = hook.memoizedState?.current;
           if (api && ['getQualities', 'getQuality', 'setQuality', 'setAutoQualityMode', 'isAutoQualityMode']
-            .every(name => typeof api[name] === 'function')) {
-            cachedApi = api;
-            cachedVideo = video;
-            return api;
-          }
+            .every(name => typeof api[name] === 'function')) return api;
         }
       }
       return null;
@@ -36,38 +28,22 @@ function installKickEconomy() {
     const applyQuality = () => {
       try {
         const api = findPlayer();
-        if (!api) {
-          if (++retries > 10) { clearInterval(timer); timer = null; }
-          return;
-        }
-        if (!requested) {
-          api.setAutoQualityMode(true);
-          clearInterval(timer);
-          timer = null;
-          return;
-        }
+        if (!api) return;
+        if (!requested) { api.setAutoQualityMode(true); return; }
         const options = (api.getQualities() || []).filter(q => Number.isFinite(q.height) && q.height > 0)
           .sort((a, b) => a.height - b.height);
         const best = options.filter(q => q.height <= requested).pop() || options[0];
         if (!best) return;
         if (api.isAutoQualityMode() || api.getQuality()?.height !== best.height) {
-          api.setAutoQualityMode(false);
-          api.setQuality(best);
-        }
-        if (api.getQuality()?.height === best.height) {
-          clearInterval(timer);
-          timer = null;
+          api.setAutoQualityMode(false); api.setQuality(best);
         }
       } catch (_) { /* versão desconhecida: não interfere na reprodução */ }
     };
     window.__pfApplyKickQuality = value => {
       requested = Math.max(0, Number(value) || 0);
       clearInterval(timer); timer = null;
-      retries = 0;
       applyQuality();
-      if (requested && timer === null && (!cachedApi || cachedApi.getQuality()?.height !== requested)) {
-        timer = setInterval(applyQuality, 3000);
-      }
+      if (requested) timer = setInterval(applyQuality, 3000);
     };
     return;
   }

@@ -408,42 +408,6 @@ function market() {
   }, 10000);
 }
 
-/** Segue automaticamente o canal na Twitch se a conta estiver autenticada e ainda não seguir. */
-function autoFollowTwitch() {
-  let tries = 0;
-  const timer = setInterval(() => {
-    if (++tries > 25) { clearInterval(timer); return; }
-    if (document.querySelector('button[data-a-target="unfollow-button"]')) {
-      clearInterval(timer);
-      return;
-    }
-    const btn = document.querySelector('button[data-a-target="follow-button"]');
-    if (btn && !btn.disabled) {
-      btn.click();
-      clearInterval(timer);
-    }
-  }, 2000);
-}
-
-/** Segue automaticamente o canal na Kick se a conta estiver autenticada e ainda não seguir. */
-function autoFollowKick() {
-  let tries = 0;
-  const timer = setInterval(() => {
-    if (++tries > 25) { clearInterval(timer); return; }
-    const buttons = Array.from(document.querySelectorAll('button'));
-    const btn = buttons.find(b => {
-      const txt = (b.textContent || '').trim().toLowerCase();
-      const label = (b.getAttribute('aria-label') || '').toLowerCase();
-      return (txt === 'follow' || txt === 'seguir' || label === 'follow' || label === 'seguir') &&
-             !b.disabled && !/unfollow|deixar de seguir/i.test(txt + label);
-    });
-    if (btn) {
-      btn.click();
-      clearInterval(timer);
-    }
-  }, 2500);
-}
-
 // ---------- Qual página é esta? ----------
 
 const host = location.hostname;
@@ -466,23 +430,15 @@ if (/pokeidle\.io$/.test(host)) {
   });
 } else if (isChat) {
   inject(compactChat);
-  if (/twitch\.tv$/.test(host)) {
-    inject(twitchChat);
-    inject(autoFollowTwitch);
-  } else if (/kick\.com$/.test(host)) {
-    inject(autoFollowKick);
-  }
+  if (/twitch\.tv$/.test(host)) inject(twitchChat);
   // Clique na faixa (ex.: botão de pontos): avisa o app para abrir o chat inteiro e o modal aparecer
   document.addEventListener('pointerdown', () => ipcRenderer.sendToHost('chat-click'), true);
 } else if (host === 'player.kick.com' || host === 'www.twitch.tv') {
   inject(player);
-  if (host === 'player.kick.com') {
-    inject(autoFollowKick);
-  } else if (host === 'www.twitch.tv') {
+  if (host === 'www.twitch.tv') {
     inject(compactChat);
     inject(twitchLayout);
     inject(twitchChat);
-    inject(autoFollowTwitch);
     window.addEventListener('message', e => {
       if (e.source === window && typeof e.data?.__pfTwitchChatReady === 'boolean') ipcRenderer.sendToHost('twitch-chat-ready', e.data.__pfTwitchChatReady);
     });

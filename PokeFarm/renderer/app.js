@@ -46,11 +46,7 @@ const S = {
   autoLives: load('pf.autoLives', true) === true,
   twitchEconomy: load('pf.twitchEconomy', false) === true,
   kickEconomy: load('pf.kickEconomy', false) === true,
-  compactView: load('pf.compactView', false) === true,
-  videoLimitProfile: Number(load('pf.videoLimitProfile', 1)) || 0,
-  videoLimitTotal: Number(load('pf.videoLimitTotal', 2)) || 0,
   livePlatformFilter: load('pf.livePlatformFilter', 'both'),
-  autoFollow: load('pf.autoFollow', true) !== false,
   marketAccount: load('pf.marketAccount', 'main'),
   profileLivesActive: load('pf.profileLivesActive', {}),
   liveProfile: load('pf.liveProfile', 'all'),
@@ -69,6 +65,11 @@ const S = {
   target: 'kick',
 };
 
+// Limpa chaves legadas da Fase 2 que causavam compressão e travamento de reprodução
+try {
+  ['pf.compactView', 'pf.videoLimitProfile', 'pf.videoLimitTotal', 'pf.autoFollow'].forEach((k) => localStorage.removeItem(k));
+} catch (_) {}
+
 const getAccount = (id) => S.accounts.find((a) => a.id === id) || S.accounts[0];
 const currentAccount = () => getAccount(S.gameAccount);
 const currentLiveAccount = () => getAccount(S.liveProfile);
@@ -80,11 +81,7 @@ function persist() {
   save('pf.autoLives', S.autoLives); save('pf.livePoll', S.livePoll);
   save('pf.twitchEconomy', S.twitchEconomy);
   save('pf.kickEconomy', S.kickEconomy);
-  save('pf.compactView', S.compactView);
-  save('pf.videoLimitProfile', S.videoLimitProfile);
-  save('pf.videoLimitTotal', S.videoLimitTotal);
   save('pf.livePlatformFilter', S.livePlatformFilter);
-  save('pf.autoFollow', S.autoFollow);
   save('pf.marketAccount', S.marketAccount);
   save('pf.profileLivesActive', S.profileLivesActive);
   save('pf.liveProfile', S.liveProfile);
@@ -217,6 +214,7 @@ function makeWebview(src, opts = {}) {
   }, 800));
   wv.addEventListener('dom-ready', () => {
     wv.__ready = true;
+    wv.__skeleton.classList.add('gone');
     try { wv.setAudioMuted(wv.__muted); } catch (_) { /* ignora */ }
     if (opts.onReady) opts.onReady(wv);
   });
@@ -271,13 +269,11 @@ function createTile(p, item) {
   const t = { stalls: 0, rect: null, sharedTwitch: p === 'twitch', chatFallbackTimer: null, accountId: accId };
 
   t.muteBtn = el('button', { onclick: () => toggleMute(id) });
-  t.waitingBadge = el('span', { class: 'waiting-badge', text: 'Fila Vídeo', hidden: true });
   const profileTag = S.accounts.length > 1 ? el('span', { class: 'profile-tag', text: acc.name || 'Conta' }) : null;
   const hdr = el('div', { class: 'hdr', 'data-drag': 'move', title: 'Arraste para mover o bloco' },
     el('span', { class: 'dot', style: `background:${P.color}` }),
     el('span', { class: 'name', text: item.channel }),
     profileTag,
-    t.waitingBadge,
     el('span', { class: 'sp' }),
     t.muteBtn,
     el('button', { title: 'Recarregar', 'aria-label': 'Recarregar', text: '⟳', onclick: () => reloadTile(t) }),
@@ -435,7 +431,6 @@ function collapseChat() {
 
 function syncTiles() {
   const grid = $('#grid');
-  grid.classList.toggle('compact-view', S.compactView);
   const saved = all();
   const ids = new Set(saved.map((e) => e.i.id));
 
@@ -473,61 +468,11 @@ function syncTiles() {
   for (const id of Object.keys(S.frames)) if (!ids.has(id)) delete S.frames[id];
   for (const id of liveStates.keys()) if (!ids.has(id)) liveStates.delete(id);
 
-  // Calcula orçamento de slots de vídeo
-  const profileLimit = Number(S.videoLimitProfile) || 0;
-  const totalLimit = Number(S.videoLimitTotal) || 0;
-  const profileCounts = new Map();
-  let totalActiveVideos = 0;
-  let totalWaitingVideos = 0;
-
   for (const e of visible) {
-    const accId = e.i.accountId || 'main';
-    const pCount = profileCounts.get(accId) || 0;
-    const canProfile = profileLimit === 0 || pCount < profileLimit;
-    const canTotal = totalLimit === 0 || totalActiveVideos < totalLimit;
-    const hasVideoSlot = canProfile && canTotal;
-
-    if (hasVideoSlot) {
-      profileCounts.set(accId, pCount + 1);
-      totalActiveVideos++;
-    } else {
-      totalWaitingVideos++;
-    }
-
     if (!tiles.has(e.i.id)) grid.append(createTile(e.p, e.i).root);
-    const t = tiles.get(e.i.id);
-    if (t) {
-      t.hasVideoSlot = hasVideoSlot;
-      t.root.classList.toggle('waiting-slot', !hasVideoSlot);
-      if (t.waitingBadge) t.waitingBadge.hidden = hasVideoSlot;
-      // Throttling real de processos: se não tem vaga de vídeo, remove a webview do player para liberar GPU e memória
-      if (!hasVideoSlot && e.p === 'kick') {
-        if (t.player && t.player.isConnected) {
-          t.player.remove();
-          t.player = null;
-        }
-      } else if (hasVideoSlot && !t.player) {
-        const P = PLAT[e.p];
-        const part = accountPartition(getAccount(accId));
-        t.player = makeWebview(P.player(e.i.channel), {
-          muted: e.i.muted,
-          partition: part,
-          onReady: (wv) => { applyMute(e.i.id); applyQuality(wv); applyChatMode(e.i.id); },
-        });
-        t.playerBox.prepend(t.player);
-      }
-    }
   }
 
-  const limitStatus = $('#video-limit-status');
-  if (limitStatus) {
-    const activeText = totalLimit > 0 ? `${totalActiveVideos}/${totalLimit} ativos` : `${totalActiveVideos} ativos`;
-    limitStatus.textContent = totalWaitingVideos > 0
-      ? `(${activeText} · ${totalWaitingVideos} em fila)`
-      : `(${activeText})`;
-  }
-
-  syncTwitchEconomy(filter === 'kick' ? [] : open.filter(e => e.p === 'twitch'));
+  syncTwitchEconomy(open.filter(e => e.p === 'twitch').map(e => e.i.channel));
   persist();
   layout();
   renderLiveControls();
@@ -753,7 +698,6 @@ function autoColumns(n, W, H, chrome) {
 function layout() {
   const grid = $('#grid');
   grid.classList.toggle('nochat', !S.showChat);
-  grid.classList.toggle('compact-view', S.compactView);
   const items = all().filter((e) => tiles.has(e.i.id));
   $('#empty').hidden = items.length > 0;
   const W = grid.clientWidth;
@@ -761,24 +705,6 @@ function layout() {
   if (!items.length || !W || !H) return;
 
   const gap = 6;
-  if (S.compactView) {
-    const cols = S.columns > 0 ? Math.min(S.columns, items.length) : Math.max(1, Math.min(4, Math.floor(W / 260)));
-    const tileH = S.showChat ? 72 : 26;
-    const tileW = (W - gap * (cols + 1)) / cols;
-    items.forEach((e, idx) => {
-      const t = tiles.get(e.i.id);
-      if (!t) return;
-      const col = idx % cols;
-      const row = Math.floor(idx / cols);
-      const r = { x: gap + col * (tileW + gap), y: gap + row * (tileH + gap), w: tileW, h: tileH };
-      t.rect = r;
-      Object.assign(t.root.style, {
-        left: `${r.x}px`, top: `${r.y}px`, width: `${Math.max(r.w, 10)}px`, height: `${Math.max(r.h, 10)}px`,
-      });
-    });
-    return;
-  }
-
   const cols = S.columns > 0 ? Math.min(S.columns, items.length) : autoColumns(items.length, W, H, 22 + (S.showChat ? 46 : 0));
   const rows = Math.ceil(items.length / cols);
   items.forEach((e, idx) => {
@@ -1293,35 +1219,7 @@ function setupBar() {
     });
   }
 
-  const compactBox = $('#compact-view');
-  if (compactBox) {
-    compactBox.checked = S.compactView;
-    compactBox.addEventListener('change', (e) => {
-      S.compactView = e.target.checked;
-      persist();
-      syncTiles();
-    });
-  }
 
-  const vProfile = $('#video-limit-profile');
-  if (vProfile) {
-    vProfile.value = String(S.videoLimitProfile);
-    vProfile.addEventListener('change', (e) => {
-      S.videoLimitProfile = Number(e.target.value) || 0;
-      persist();
-      syncTiles();
-    });
-  }
-
-  const vTotal = $('#video-limit-total');
-  if (vTotal) {
-    vTotal.value = String(S.videoLimitTotal);
-    vTotal.addEventListener('change', (e) => {
-      S.videoLimitTotal = Number(e.target.value) || 0;
-      persist();
-      syncTiles();
-    });
-  }
 
   $('#profile-connections')?.addEventListener('click', () => {
     S.gameAccount = S.liveProfile;
@@ -1385,14 +1283,7 @@ function setupBar() {
     });
   }
 
-  const autoFollowBox = $('#auto-follow');
-  if (autoFollowBox) {
-    autoFollowBox.checked = S.autoFollow;
-    autoFollowBox.addEventListener('change', (e) => {
-      S.autoFollow = e.target.checked;
-      persist();
-    });
-  }
+
 
   const marketAccSel = $('#market-account');
   if (marketAccSel) {

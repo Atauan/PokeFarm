@@ -20,6 +20,9 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.
 - Registro detalhado da análise em [docs/changes/2026-10-14-1030--analise-de-desempenho-e-leitura-readme.md](docs/changes/2026-10-14-1030--analise-de-desempenho-e-leitura-readme.md).
 
 ### Corrigido
+- Revertido throttling e descarte forçado de `<webview>` de vídeo da Fase 2 que quebrava o carregamento de streams, congelava os players no skeleton cinza e esmagava blocos em faixas de 72px com espaço preto abaixo. Referência: [docs/changes/2026-10-14-1718--reverter-fase2-e-restaurar-grade-video-16-9.md](docs/changes/2026-10-14-1718--reverter-fase2-e-restaurar-grade-video-16-9.md).
+- Restaurada grade 16:9 dinâmica completa (`autoColumns`) cobrindo toda a janela disponível, sem compressões forçadas ou bloqueios de layout.
+- Removidas rotinas invasivas de auto-follow e hooks contínuos que causavam recargas e concorrência no player.
 - Restaurada abertura imediata de todas as lives cadastradas sob a opção "Todas as contas", impedindo bloqueio indevido por flags de perfil inativo. Referência: [docs/changes/2026-10-14-1627--restaurar-abertura-lives-e-clique-jogo.md](docs/changes/2026-10-14-1627--restaurar-abertura-lives-e-clique-jogo.md).
 - Corrigida a captura de cliques em links de streamers oficiais dentro da modal de Bônus Twitch do Pokeidle, abrindo a live na grade imediatamente com confirmação em toast.
 - Corrigido o início da interface com classe ativa estática em `panel-lives`, prevenindo abertura de tela preta e garantindo renderização instantânea.

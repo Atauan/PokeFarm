@@ -67,9 +67,6 @@
             </select>
           </label>
           <div class="sep"></div>
-          <label class="inline" title="Oculta a área gráfica de vídeo dos blocos para reduzir o consumo da GPU e CPU, mantendo som e pontos">
-            <input type="checkbox" id="compact-view"> Compacto
-          </label>
           <label class="inline" title="Qualidade de todas as lives (menor = menos peso)">Qualidade
             <select id="quality" aria-label="Qualidade das lives">
               <option value="160">Mínima (160p)</option>
@@ -118,32 +115,12 @@
           <button id="check-lives" title="Busca os canais do jogo e abre os online">Verificar agora</button>
           <span id="live-summary" class="muted small" role="status"></span>
           <div class="sep"></div>
-          <label class="inline small" title="Clica em Seguir/Follow automaticamente ao abrir lives para liberar acúmulo de pontos">
-            <input type="checkbox" id="auto-follow" checked> Seguir canais automaticamente
-          </label>
           <label class="inline small" id="profile-active-wrap" title="Pausa ou ativa a execução das lives desta conta">
             <input type="checkbox" id="profile-lives-active" checked> <span id="profile-active-label">Lives ativas</span>
           </label>
           <div class="sep"></div>
           <label class="inline small" title="Substitui vídeos por chat compartilhado sem renderização"><input type="checkbox" id="twitch-economy"> Twitch econômica</label>
           <label class="inline small" title="Qualidade mínima e chat leve"><input type="checkbox" id="kick-economy"> Kick econômica</label>
-          <label class="inline small" title="Limite de vídeos reproduzindo simultaneamente por conta">Vídeos/perfil
-            <select id="video-limit-profile" aria-label="Vídeos por perfil">
-              <option value="1">1</option>
-              <option value="2">2</option>
-              <option value="3">3</option>
-              <option value="0">Ilimitado</option>
-            </select>
-          </label>
-          <label class="inline small" title="Limite de vídeos reproduzindo simultaneamente no total">Total vídeos
-            <select id="video-limit-total" aria-label="Total de vídeos">
-              <option value="2">2</option>
-              <option value="4">4</option>
-              <option value="6">6</option>
-              <option value="0">Ilimitado</option>
-            </select>
-          </label>
-          <span id="video-limit-status" class="muted small"></span>
           <span id="twitch-economy-status" role="status" class="muted small"></span>
           <button id="twitch-economy-reload" class="small" hidden>Reconectar Twitch</button>
         </div>
