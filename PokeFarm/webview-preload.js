@@ -265,8 +265,14 @@ function compactChat() {
 function market() {
   if (window.__pfMarket) return;
   window.__pfMarket = true;
+  window.__pfMarketEnabled = false;
+  window.__pfEnableMarket = (enabled) => {
+    window.__pfMarketEnabled = enabled === true;
+  };
   window.__pfPoll = window.__pfPoll || 60;
-  const post = (o) => window.postMessage({ __pfMarket: o }, '*');
+  const post = (o) => {
+    if (window.__pfMarketEnabled) window.postMessage({ __pfMarket: o }, '*');
+  };
   const WANT = /market|mercado|rmt|listing|offer|oferta|auction|leil|trade|anunc/i;
   const replay = {};
   const NAME = /^(name|nome|displayName|speciesName|pokemonName|itemName|title|species|pokemon|item)$/i;
@@ -354,9 +360,11 @@ function market() {
   // Repete as leituras GET do mercado periodicamente (as 5 mais recentes)
   (function tick() {
     setTimeout(() => {
-      Object.keys(replay).sort((a, b) => replay[b] - replay[a]).slice(0, 5).forEach((u) => {
-        origFetch(u, { credentials: 'include' }).then((r) => r.text()).then((t) => handle(u, 'GET', t, true)).catch(() => {});
-      });
+      if (window.__pfMarketEnabled) {
+        Object.keys(replay).sort((a, b) => replay[b] - replay[a]).slice(0, 5).forEach((u) => {
+          origFetch(u, { credentials: 'include' }).then((r) => r.text()).then((t) => handle(u, 'GET', t, true)).catch(() => {});
+        });
+      }
       tick();
     }, Math.max(15, window.__pfPoll || 60) * 1000);
   })();
@@ -373,6 +381,7 @@ function market() {
     return isNaN(v) ? null : v * m;
   }
   setInterval(() => {
+    if (!window.__pfMarketEnabled) return;
     const out = [];
     document.querySelectorAll('button, a').forEach((b) => {
       if (!/ver ofertas/i.test(b.textContent || '')) return;
@@ -399,6 +408,42 @@ function market() {
   }, 10000);
 }
 
+/** Segue automaticamente o canal na Twitch se a conta estiver autenticada e ainda não seguir. */
+function autoFollowTwitch() {
+  let tries = 0;
+  const timer = setInterval(() => {
+    if (++tries > 25) { clearInterval(timer); return; }
+    if (document.querySelector('button[data-a-target="unfollow-button"]')) {
+      clearInterval(timer);
+      return;
+    }
+    const btn = document.querySelector('button[data-a-target="follow-button"]');
+    if (btn && !btn.disabled) {
+      btn.click();
+      clearInterval(timer);
+    }
+  }, 2000);
+}
+
+/** Segue automaticamente o canal na Kick se a conta estiver autenticada e ainda não seguir. */
+function autoFollowKick() {
+  let tries = 0;
+  const timer = setInterval(() => {
+    if (++tries > 25) { clearInterval(timer); return; }
+    const buttons = Array.from(document.querySelectorAll('button'));
+    const btn = buttons.find(b => {
+      const txt = (b.textContent || '').trim().toLowerCase();
+      const label = (b.getAttribute('aria-label') || '').toLowerCase();
+      return (txt === 'follow' || txt === 'seguir' || label === 'follow' || label === 'seguir') &&
+             !b.disabled && !/unfollow|deixar de seguir/i.test(txt + label);
+    });
+    if (btn) {
+      btn.click();
+      clearInterval(timer);
+    }
+  }, 2500);
+}
+
 // ---------- Qual página é esta? ----------
 
 const host = location.hostname;
@@ -409,6 +454,11 @@ inject(keepAlive);
 
 if (/pokeidle\.io$/.test(host)) {
   inject(market);
+  try {
+    require('./pokeidle-hunt.js').installPokeidleHunt();
+  } catch (err) {
+    console.error('[PokeFarm] Falha ao carregar pokeidle-hunt:', err);
+  }
   // Página -> app (o mundo isolado escuta as mensagens da página)
   window.addEventListener('message', (e) => {
     if (e.source !== window || !e.data || typeof e.data.__pfMarket !== 'object') return;
@@ -416,15 +466,23 @@ if (/pokeidle\.io$/.test(host)) {
   });
 } else if (isChat) {
   inject(compactChat);
-  if (/twitch\.tv$/.test(host)) inject(twitchChat);
+  if (/twitch\.tv$/.test(host)) {
+    inject(twitchChat);
+    inject(autoFollowTwitch);
+  } else if (/kick\.com$/.test(host)) {
+    inject(autoFollowKick);
+  }
   // Clique na faixa (ex.: botão de pontos): avisa o app para abrir o chat inteiro e o modal aparecer
   document.addEventListener('pointerdown', () => ipcRenderer.sendToHost('chat-click'), true);
 } else if (host === 'player.kick.com' || host === 'www.twitch.tv') {
   inject(player);
-  if (host === 'www.twitch.tv') {
+  if (host === 'player.kick.com') {
+    inject(autoFollowKick);
+  } else if (host === 'www.twitch.tv') {
     inject(compactChat);
     inject(twitchLayout);
     inject(twitchChat);
+    inject(autoFollowTwitch);
     window.addEventListener('message', e => {
       if (e.source === window && typeof e.data?.__pfTwitchChatReady === 'boolean') ipcRenderer.sendToHost('twitch-chat-ready', e.data.__pfTwitchChatReady);
     });
