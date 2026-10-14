@@ -24,15 +24,34 @@ const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) 
 
 // ---------------- Estado ----------------
 
+const accountPartition = (a) => {
+  if (!a) return PARTITION;
+  const id = typeof a === 'object' ? a.id : String(a);
+  return id === 'main' ? PARTITION : `persist:pokefarm-acc-${id}`;
+};
+
+const normalizeChannelsList = (list) => (Array.isArray(list) ? list.map(item => {
+  if (item && typeof item === 'object' && !item.accountId) item.accountId = 'main';
+  return item;
+}) : []);
+
 const S = {
-  kick: load('pf.kick', []),
-  twitch: load('pf.twitch', []),
+  kick: normalizeChannelsList(load('pf.kick', [])),
+  twitch: normalizeChannelsList(load('pf.twitch', [])),
   columns: load('pf.columns', 0),
   showChat: load('pf.showChat', true),
   quality: load('pf.quality', 160),   // altura máxima das lives (0 = automática)
   autoLives: load('pf.autoLives', true) === true,
   twitchEconomy: load('pf.twitchEconomy', false) === true,
   kickEconomy: load('pf.kickEconomy', false) === true,
+  compactView: load('pf.compactView', false) === true,
+  videoLimitProfile: Number(load('pf.videoLimitProfile', 1)) || 0,
+  videoLimitTotal: Number(load('pf.videoLimitTotal', 2)) || 0,
+  livePlatformFilter: load('pf.livePlatformFilter', 'both'),
+  autoFollow: load('pf.autoFollow', true) !== false,
+  marketAccount: load('pf.marketAccount', 'main'),
+  profileLivesActive: load('pf.profileLivesActive', {}),
+  liveProfile: load('pf.liveProfile', 'main'),
   gameChannels: normalizeGameChannels(load('pf.gameChannels', [])),
   ignoredGameChannels: load('pf.ignoredGameChannels', []),
   livePoll: [30, 60, 120, 300].includes(load('pf.livePoll', 60)) ? load('pf.livePoll', 60) : 60,
@@ -43,16 +62,30 @@ const S = {
     return Array.isArray(list) && list.length ? list : [{ id: 'main', name: 'Conta 1', main: true }];
   })(),
   gameAccount: load('pf.gameAccount', 'main'),
+  gameHunt: load('pf.gameHunt', true) !== false,
   frames: load('pf.frames', {}),      // id -> [x, y, largura, altura] em fração da área
   target: 'kick',
 };
+
+const getAccount = (id) => S.accounts.find((a) => a.id === id) || S.accounts[0];
+const currentAccount = () => getAccount(S.gameAccount);
+const currentLiveAccount = () => getAccount(S.liveProfile);
+
 function persist() {
   save('pf.kick', S.kick); save('pf.twitch', S.twitch); save('pf.columns', S.columns);
   save('pf.showChat', S.showChat); save('pf.quality', S.quality); save('pf.tab', S.tab); save('pf.frames', S.frames);
-  save('pf.accounts', S.accounts); save('pf.gameAccount', S.gameAccount);
+  save('pf.accounts', S.accounts); save('pf.gameAccount', S.gameAccount); save('pf.gameHunt', S.gameHunt);
   save('pf.autoLives', S.autoLives); save('pf.livePoll', S.livePoll);
   save('pf.twitchEconomy', S.twitchEconomy);
   save('pf.kickEconomy', S.kickEconomy);
+  save('pf.compactView', S.compactView);
+  save('pf.videoLimitProfile', S.videoLimitProfile);
+  save('pf.videoLimitTotal', S.videoLimitTotal);
+  save('pf.livePlatformFilter', S.livePlatformFilter);
+  save('pf.autoFollow', S.autoFollow);
+  save('pf.marketAccount', S.marketAccount);
+  save('pf.profileLivesActive', S.profileLivesActive);
+  save('pf.liveProfile', S.liveProfile);
   save('pf.gameChannels', S.gameChannels);
   save('pf.ignoredGameChannels', S.ignoredGameChannels);
 }
@@ -86,18 +119,20 @@ function normalizeGameChannels(rows) {
   return [...channels.values()];
 }
 
-function receiveGameChannels(rows) {
+function receiveGameChannels(rows, fromAccountId) {
+  const accId = fromAccountId || 'main';
   S.gameChannels = normalizeGameChannels([...S.gameChannels, ...normalizeGameChannels(rows)]);
-  importGameChannels();
+  importGameChannels(accId);
   if (manualDiscoveryPending && all().length) void checkLivesNow();
 }
 
-function importGameChannels() {
+function importGameChannels(targetAccountId) {
   let added = 0;
+  const accId = targetAccountId || S.liveProfile || 'main';
   const ignored = new Set(S.ignoredGameChannels);
   for (const { platform, channel } of S.gameChannels) {
-    if (ignored.has(`${platform}:${channel}`) || S[platform].some(item => item.channel === channel)) continue;
-    S[platform].push({ id: uid(), channel, muted: true });
+    if (ignored.has(`${platform}:${channel}`) || S[platform].some(item => item.channel === channel && (item.accountId || 'main') === accId)) continue;
+    S[platform].push({ id: uid(), channel, muted: true, accountId: accId });
     added++;
   }
   syncTiles();
@@ -113,17 +148,20 @@ function cleanChannel(raw) {
   return /^[a-z0-9_-]{2,40}$/.test(s) ? s : null;
 }
 
-function addChannels(text) {
+function addChannels(text, targetAccountId) {
+  const accId = targetAccountId || S.liveProfile || 'main';
   for (const raw of String(text).split(/[,\s]+/)) {
     const c = cleanChannel(raw);
     if (!c) continue;
     const low = raw.toLowerCase();
     const p = low.includes('twitch.tv') ? 'twitch' : (low.includes('kick.com') ? 'kick' : S.target);
     S.ignoredGameChannels = S.ignoredGameChannels.filter(key => key !== `${p}:${c}`);
-    if (!S[p].some((x) => x.channel === c)) S[p].push({ id: uid(), channel: c, muted: true });
+    if (!S[p].some((x) => x.channel === c && (x.accountId || 'main') === accId)) {
+      S[p].push({ id: uid(), channel: c, muted: true, accountId: accId });
+    }
     if (!S.autoLives) {
-      const item = S[p].find(x => x.channel === c);
-      liveStates.set(item.id, nextLiveState(null, 'unknown', true));
+      const item = S[p].find(x => x.channel === c && (x.accountId || 'main') === accId);
+      if (item) liveStates.set(item.id, nextLiveState(null, 'unknown', true));
     }
   }
   persist();
@@ -220,12 +258,19 @@ let zTop = 10;
 function createTile(p, item) {
   const P = PLAT[p];
   const id = item.id;
-  const t = { stalls: 0, rect: null, sharedTwitch: p === 'twitch', chatFallbackTimer: null };
+  const accId = item.accountId || 'main';
+  const acc = getAccount(accId);
+  const part = accountPartition(acc);
+  const t = { stalls: 0, rect: null, sharedTwitch: p === 'twitch', chatFallbackTimer: null, accountId: accId };
 
   t.muteBtn = el('button', { onclick: () => toggleMute(id) });
+  t.waitingBadge = el('span', { class: 'waiting-badge', text: 'Fila Vídeo', hidden: true });
+  const profileTag = S.accounts.length > 1 ? el('span', { class: 'profile-tag', text: acc.name || 'Conta' }) : null;
   const hdr = el('div', { class: 'hdr', 'data-drag': 'move', title: 'Arraste para mover o bloco' },
     el('span', { class: 'dot', style: `background:${P.color}` }),
     el('span', { class: 'name', text: item.channel }),
+    profileTag,
+    t.waitingBadge,
     el('span', { class: 'sp' }),
     t.muteBtn,
     el('button', { title: 'Recarregar', 'aria-label': 'Recarregar', text: '⟳', onclick: () => reloadTile(t) }),
@@ -235,6 +280,7 @@ function createTile(p, item) {
 
   t.player = makeWebview(P.player(item.channel), {
     muted: item.muted,
+    partition: part,
     onReady: (wv) => { applyMute(id); applyQuality(wv); applyChatMode(id); },
   });
   t.playerBox = el('div', { class: `player${t.sharedTwitch ? ' shared-twitch' : ''}` }, t.player, t.player.__skeleton);
@@ -246,7 +292,7 @@ function createTile(p, item) {
       if (e.channel === 'chat-click') expandChat(id);
       if (e.channel === 'twitch-chat-ready') checkTwitchChat(id, e.args[0] === true);
     });
-  } else attachSeparateChat(id, t, P.chat(item.channel));
+  } else attachSeparateChat(id, t, P.chat(item.channel), part);
 
   t.root = el('div', { class: 'tile' },
     hdr,
@@ -267,8 +313,8 @@ function reloadTile(t) {
   for (const wv of new Set([t.player, t.chat])) reloadWebview(wv);
 }
 
-function attachSeparateChat(id, t, url) {
-  t.chat = makeWebview(url, { muted: true, skeleton: 'chat', onReady: () => applyChatMode(id) });
+function attachSeparateChat(id, t, url, part) {
+  t.chat = makeWebview(url, { muted: true, partition: part || accountPartition(t.accountId), skeleton: 'chat', onReady: () => applyChatMode(id) });
   t.chatBox = el('div', { class: 'chat' }, t.chat, t.chat.__skeleton);
   t.chat.addEventListener('ipc-message', e => { if (e.channel === 'chat-click') expandChat(id); });
 }
@@ -286,7 +332,7 @@ function checkTwitchChat(id, ready) {
     t.sharedTwitch = false;
     t.playerBox.classList.remove('shared-twitch');
     t.player.executeJavaScript('window.__pfSetTwitchLayout && window.__pfSetTwitchLayout({enabled:false})').catch(() => {});
-    attachSeparateChat(id, t, PLAT.twitch.chat(findItem(id).i.channel));
+    attachSeparateChat(id, t, PLAT.twitch.chat(findItem(id).i.channel), accountPartition(t.accountId));
     t.playerBox.after(t.chatBox);
     if (wasExpanded) expandChat(id);
   }, 30000);
@@ -382,11 +428,24 @@ function collapseChat() {
 
 function syncTiles() {
   const grid = $('#grid');
+  grid.classList.toggle('compact-view', S.compactView);
   const saved = all();
   const ids = new Set(saved.map((e) => e.i.id));
-  const open = saved.filter((e) => liveStates.get(e.i.id)?.open);
+
+  const filter = S.livePlatformFilter || 'both';
+  const matchesPlatform = (p) => filter === 'both' || filter === p;
+
+  // Um canal só abre se estiver online, pertencer à plataforma permitida E o perfil a que pertence estiver ativo
+  const open = saved.filter((e) => {
+    if (!matchesPlatform(e.p)) return false;
+    const accId = e.i.accountId || 'main';
+    const isActive = S.profileLivesActive[accId] !== false;
+    return isActive && liveStates.get(e.i.id)?.open;
+  });
+
   const visible = open.filter(e => !(S.twitchEconomy && e.p === 'twitch'));
   const visibleIds = new Set(visible.map((e) => e.i.id));
+
   for (const [id, t] of tiles) {
     if (!visibleIds.has(id)) {
       if (expandedChat === id) collapseChat();
@@ -395,11 +454,66 @@ function syncTiles() {
       t.root.remove(); tiles.delete(id);
     }
   }
+
   // Fechar por estar offline preserva o tamanho/posição. Remover o canal apaga ambos.
   for (const id of Object.keys(S.frames)) if (!ids.has(id)) delete S.frames[id];
   for (const id of liveStates.keys()) if (!ids.has(id)) liveStates.delete(id);
-  for (const e of visible) if (!tiles.has(e.i.id)) grid.append(createTile(e.p, e.i).root);
-  syncTwitchEconomy(open.filter(e => e.p === 'twitch').map(e => e.i.channel));
+
+  // Calcula orçamento de slots de vídeo
+  const profileLimit = Number(S.videoLimitProfile) || 0;
+  const totalLimit = Number(S.videoLimitTotal) || 0;
+  const profileCounts = new Map();
+  let totalActiveVideos = 0;
+  let totalWaitingVideos = 0;
+
+  for (const e of visible) {
+    const accId = e.i.accountId || 'main';
+    const pCount = profileCounts.get(accId) || 0;
+    const canProfile = profileLimit === 0 || pCount < profileLimit;
+    const canTotal = totalLimit === 0 || totalActiveVideos < totalLimit;
+    const hasVideoSlot = canProfile && canTotal;
+
+    if (hasVideoSlot) {
+      profileCounts.set(accId, pCount + 1);
+      totalActiveVideos++;
+    } else {
+      totalWaitingVideos++;
+    }
+
+    if (!tiles.has(e.i.id)) grid.append(createTile(e.p, e.i).root);
+    const t = tiles.get(e.i.id);
+    if (t) {
+      t.hasVideoSlot = hasVideoSlot;
+      t.root.classList.toggle('waiting-slot', !hasVideoSlot);
+      if (t.waitingBadge) t.waitingBadge.hidden = hasVideoSlot;
+      // Throttling real de processos: se não tem vaga de vídeo, remove a webview do player para liberar GPU e memória
+      if (!hasVideoSlot && e.p === 'kick') {
+        if (t.player && t.player.isConnected) {
+          t.player.remove();
+          t.player = null;
+        }
+      } else if (hasVideoSlot && !t.player) {
+        const P = PLAT[e.p];
+        const part = accountPartition(getAccount(accId));
+        t.player = makeWebview(P.player(e.i.channel), {
+          muted: e.i.muted,
+          partition: part,
+          onReady: (wv) => { applyMute(e.i.id); applyQuality(wv); applyChatMode(e.i.id); },
+        });
+        t.playerBox.prepend(t.player);
+      }
+    }
+  }
+
+  const limitStatus = $('#video-limit-status');
+  if (limitStatus) {
+    const activeText = totalLimit > 0 ? `${totalActiveVideos}/${totalLimit} ativos` : `${totalActiveVideos} ativos`;
+    limitStatus.textContent = totalWaitingVideos > 0
+      ? `(${activeText} · ${totalWaitingVideos} em fila)`
+      : `(${activeText})`;
+  }
+
+  syncTwitchEconomy(filter === 'kick' ? [] : open.filter(e => e.p === 'twitch'));
   persist();
   layout();
   renderLiveControls();
@@ -407,45 +521,102 @@ function syncTiles() {
 
 // ---------------- Monitoramento online/offline ----------------
 
-// Uma única página substitui todos os vídeos e chats individuais da Twitch.
-let economyView = null;
-let economyURL = '';
-function syncTwitchEconomy(channels) {
-  const names = [...new Set(channels.filter(name => /^[a-z0-9_]{1,25}$/.test(name)))].sort();
-  const selected = names.slice(0, 100);
-  const url = S.twitchEconomy && selected.length
-    ? `https://www.twitch.tv/popout/${selected[0]}/chat?pf-economy=1&pf-channels=${encodeURIComponent(selected.join(','))}` : '';
+// Map de sessões Twitch Economy por conta: accountId -> { view, url, count, accId }
+const economyViews = new Map();
+
+function syncTwitchEconomy(twitchItems) {
   $('#twitch-economy').checked = S.twitchEconomy;
   $('#kick-economy').checked = S.kickEconomy;
   $('#kick-economy-help').hidden = !S.kickEconomy;
   $('#twitch-economy-help').hidden = !S.twitchEconomy;
-  $('#twitch-economy-reload').hidden = !url;
-  $('#twitch-economy-status').dataset.total = String(names.length);
-  if (url === economyURL) {
-    if (!url) $('#twitch-economy-status').textContent = S.twitchEconomy ? 'Aguardando canais online' : '';
+
+  if (!S.twitchEconomy) {
+    for (const [, s] of economyViews) s.view?.remove();
+    economyViews.clear();
+    $('#twitch-economy-status').textContent = '';
+    $('#twitch-economy-reload').hidden = true;
     return;
   }
-  economyView?.remove(); economyView = null; economyURL = url;
-  $('#twitch-economy-status').textContent = !S.twitchEconomy ? '' : !url ? 'Aguardando canais online' : 'Conectando ao chat…';
-  if (!url) return;
-  economyView = makeWebview(url, { muted: true });
-  economyView.classList.add('twitch-economy-session');
-  economyView.setAttribute('aria-hidden', 'true');
-  document.body.append(economyView);
+
+  // Agrupa canais Twitch online por conta
+  const byAccount = new Map();
+  for (const acc of S.accounts) {
+    if (S.profileLivesActive[acc.id] !== false) byAccount.set(acc.id, []);
+  }
+  for (const e of twitchItems) {
+    const accId = e.i.accountId || 'main';
+    if (byAccount.has(accId)) {
+      byAccount.get(accId).push(e.i.channel);
+    }
+  }
+
+  for (const [accId, channels] of byAccount) {
+    const names = [...new Set(channels.filter(name => /^[a-z0-9_]{1,25}$/.test(name)))].sort();
+    const selected = names.slice(0, 100);
+    const url = selected.length
+      ? `https://www.twitch.tv/popout/${selected[0]}/chat?pf-economy=1&pf-channels=${encodeURIComponent(selected.join(','))}`
+      : '';
+
+    const current = economyViews.get(accId);
+    if (current && current.url === url) {
+      current.count = names.length;
+      continue;
+    }
+
+    if (current) {
+      current.view?.remove();
+      economyViews.delete(accId);
+    }
+
+    if (!url) continue;
+
+    const view = makeWebview(url, { muted: true, partition: accountPartition(accId) });
+    view.classList.add('twitch-economy-session');
+    view.setAttribute('aria-hidden', 'true');
+    document.body.append(view);
+    economyViews.set(accId, { view, url, count: names.length, accId });
+  }
+
+  // Remove webviews de contas que não têm mais canais
+  for (const [accId, s] of economyViews) {
+    if (!byAccount.has(accId) || !byAccount.get(accId).length) {
+      s.view?.remove();
+      economyViews.delete(accId);
+    }
+  }
+
+  const activeViewsCount = economyViews.size;
+  $('#twitch-economy-reload').hidden = activeViewsCount === 0;
+  if (activeViewsCount === 0) {
+    $('#twitch-economy-status').textContent = 'Aguardando canais online';
+  } else {
+    $('#twitch-economy-status').textContent = `${activeViewsCount} perfil(is) conectado(s) ao chat econômico`;
+  }
 }
+
 setInterval(async () => {
-  const view = economyView;
-  if (!view?.__ready || !view.isConnected) return;
-  try {
-    const state = await view.executeJavaScript('window.__pfTwitchEconomy || null');
-    if (view !== economyView) return;
-    const total = Number($('#twitch-economy-status').dataset.total);
-    const limit = total > 100 ? ` · limite: 100 de ${total} canais` : '';
-    $('#twitch-economy-status').textContent = !state?.connected ? 'Aguardando conexão com o chat…'
-      : !state.authenticated ? 'Sem login — entre na Twitch e clique em Reconectar Twitch'
-      : `${state.joined}/${state.requested} chats conectados · sem vídeo${limit}`;
-  } catch (_) { /* a página pode estar recarregando */ }
-}, 2000);
+  if (!S.twitchEconomy || !economyViews.size) return;
+  const statusParts = [];
+  for (const [accId, s] of economyViews) {
+    const view = s.view;
+    if (!view?.__ready || !view.isConnected) continue;
+    try {
+      const state = await view.executeJavaScript('window.__pfTwitchEconomy || null');
+      const acc = getAccount(accId);
+      const accName = acc.name || 'Conta';
+      if (!state?.connected) {
+        statusParts.push(`${accName}: conectando...`);
+      } else if (!state.authenticated) {
+        statusParts.push(`${accName}: sem login Twitch`);
+      } else {
+        statusParts.push(`${accName}: ${state.joined}/${state.requested} chats`);
+      }
+    } catch (_) {}
+  }
+  if (statusParts.length) {
+    $('#twitch-economy-status').textContent = statusParts.join(' · ');
+  }
+}, 2500);
 
 const liveStates = new Map();
 let liveTimer = null;
@@ -542,7 +713,7 @@ function renderLiveControls() {
     : unknown ? 'Não foi possível verificar alguns canais. Use Verificar agora para tentar novamente.'
       : S.autoLives ? 'As lives abrirão automaticamente quando os canais estiverem online.'
         : 'Clique em Verificar agora para trazer os canais online à tela.';
-  if (economyView && !tiles.size) {
+  if (economyViews.size && !tiles.size) {
     $('#empty-title').textContent = 'Twitch em modo econômico';
     $('#empty-detail').textContent = 'Os canais usam o chat compartilhado. Acompanhe a conexão acima e os bônus na aba Pokeidle.';
   }
@@ -568,14 +739,34 @@ function autoColumns(n, W, H, chrome) {
 function layout() {
   const grid = $('#grid');
   grid.classList.toggle('nochat', !S.showChat);
+  grid.classList.toggle('compact-view', S.compactView);
   const items = all().filter((e) => tiles.has(e.i.id));
   $('#empty').hidden = items.length > 0;
   const W = grid.clientWidth;
   const H = grid.clientHeight;
   if (!items.length || !W || !H) return;
+
+  const gap = 6;
+  if (S.compactView) {
+    const cols = S.columns > 0 ? Math.min(S.columns, items.length) : Math.max(1, Math.min(4, Math.floor(W / 260)));
+    const tileH = S.showChat ? 72 : 26;
+    const tileW = (W - gap * (cols + 1)) / cols;
+    items.forEach((e, idx) => {
+      const t = tiles.get(e.i.id);
+      if (!t) return;
+      const col = idx % cols;
+      const row = Math.floor(idx / cols);
+      const r = { x: gap + col * (tileW + gap), y: gap + row * (tileH + gap), w: tileW, h: tileH };
+      t.rect = r;
+      Object.assign(t.root.style, {
+        left: `${r.x}px`, top: `${r.y}px`, width: `${Math.max(r.w, 10)}px`, height: `${Math.max(r.h, 10)}px`,
+      });
+    });
+    return;
+  }
+
   const cols = S.columns > 0 ? Math.min(S.columns, items.length) : autoColumns(items.length, W, H, 22 + (S.showChat ? 46 : 0));
   const rows = Math.ceil(items.length / cols);
-  const gap = 6;
   items.forEach((e, idx) => {
     const t = tiles.get(e.i.id);
     if (!t) return;
@@ -665,9 +856,6 @@ const GAME_URL = 'https://pokeidle.io/app';
 let game = null;
 const games = new Map();   // id da conta -> { pane, wv }
 
-const accountPartition = (a) => (a.main ? PARTITION : `persist:pokefarm-acc-${a.id}`);
-const currentAccount = () => S.accounts.find((a) => a.id === S.gameAccount) || S.accounts[0];
-
 // Consultado somente pelo painel do tray, sem abrir as abas ou alterar o jogo.
 window.__pfCollectSessions = async () => ({
   selected: S.gameAccount,
@@ -694,8 +882,8 @@ function setupGame() {
   for (const [id, g] of games) {
     if (!S.accounts.some((a) => a.id === id)) { g.pane.remove(); games.delete(id); }
   }
-  S.accounts.forEach((a, i) => {
-    const market = i === 0;
+  S.accounts.forEach((a) => {
+    const market = S.marketAccount !== 'off' && a.id === S.marketAccount;
     const g = games.get(a.id);
     if (g && g.market === market) return;
     if (g) { g.pane.remove(); games.delete(a.id); }   // virou (ou deixou de ser) a aba do mercado
@@ -704,13 +892,16 @@ function setupGame() {
       now: true,
       skeleton: 'game',
       partition: accountPartition(a),
-      onReady: (w) => w.executeJavaScript(`window.__pfPoll = ${Number(M.poll) || 60}`).catch(() => {}),
+      onReady: (w) => {
+        w.executeJavaScript(`window.__pfPoll = ${Number(M.poll) || 60}`).catch(() => {});
+        w.executeJavaScript(`window.__pfEnableMarket && window.__pfEnableMarket(${market})`).catch(() => {});
+      },
     });
     wv.addEventListener('ipc-message', (e) => {
       if (e.channel === 'market' && market) onMarket(e.args[0]);
       if (e.channel === 'game-channels') {
         try {
-          if (/(^|\.)pokeidle\.io$/.test(new URL(wv.getURL()).hostname)) receiveGameChannels(e.args[0]);
+          if (/(^|\.)pokeidle\.io$/.test(new URL(wv.getURL()).hostname)) receiveGameChannels(e.args[0], a.id);
         } catch (_) { /* a página já foi fechada/navegou */ }
       }
     });
@@ -718,7 +909,7 @@ function setupGame() {
     $('#panel-game').append(pane);
     games.set(a.id, { pane, wv, market });
   });
-  game = games.get(S.accounts[0].id)?.wv || null;
+  game = games.get(S.marketAccount !== 'off' ? S.marketAccount : S.accounts[0].id)?.wv || null;
   if (!S.accounts.some((a) => a.id === S.gameAccount)) S.gameAccount = S.accounts[0].id;
 }
 
@@ -737,6 +928,8 @@ function addAccount() {
   S.gameAccount = a.id;
   setupGame();
   renderAccountTabs();
+  renderLiveProfileSelector();
+  renderMarketAccountSelector();
   setTab('game');
 }
 
@@ -748,9 +941,18 @@ async function removeAccount() {
     : `Remover "${a.name}"? A aba fecha e o login desta conta no Pokeidle é apagado do app.`;
   if (!window.confirm(msg)) return;
   S.accounts = S.accounts.filter((x) => x.id !== a.id);
+  S.kick = S.kick.filter(x => (x.accountId || 'main') !== a.id);
+  S.twitch = S.twitch.filter(x => (x.accountId || 'main') !== a.id);
+  delete S.profileLivesActive[a.id];
+  if (S.liveProfile === a.id) S.liveProfile = S.accounts[0].id;
+  if (S.marketAccount === a.id) S.marketAccount = S.accounts[0].id;
   S.gameAccount = S.accounts[0].id;
+  persist();
   setupGame();
   renderAccountTabs();
+  renderLiveProfileSelector();
+  renderMarketAccountSelector();
+  syncTiles();
   setTab('game');
   // Espera a aba fechar antes de apagar o login
   if (!a.main) setTimeout(() => { window.pf.clearAccount(a.id).catch(() => {}); }, 2000);
@@ -941,6 +1143,8 @@ function setTab(tab) {
     // Só reescreve se mudou (senão o cursor pula para o fim enquanto você digita)
     if ($('#account-name').value !== (acc.name || '')) $('#account-name').value = acc.name || '';
     $('#account-remove').disabled = S.accounts.length <= 1;
+    const huntBox = $('#game-hunt');
+    if (huntBox) huntBox.checked = S.gameHunt;
   }
   $('#panel-lives').classList.toggle('active', tab === 'lives');
   $('#panel-game').classList.toggle('active', tab === 'game');
@@ -980,6 +1184,15 @@ function setupBar() {
     renderAccountTabs();
     setTab('game');
   });
+  const huntCheckbox = $('#game-hunt');
+  if (huntCheckbox) {
+    huntCheckbox.checked = S.gameHunt;
+    huntCheckbox.addEventListener('change', (e) => {
+      S.gameHunt = e.target.checked;
+      persist();
+      toast(S.gameHunt ? '✓ /hunt ativado. Recarregue o jogo se necessário.' : '✕ /hunt desativado. Recarregue o jogo para ocultar.');
+    });
+  }
   $$('#target button').forEach((b) => b.addEventListener('click', () => setTarget(b.dataset.target)));
 
   const input = $('#channel-input');
@@ -1019,7 +1232,9 @@ function setupBar() {
   });
   $('#reload-all').addEventListener('click', () => {
     tiles.forEach(reloadTile);
-    if (economyView) reloadWebview(economyView);
+    for (const s of economyViews.values()) {
+      if (s.view) reloadWebview(s.view);
+    }
   });
   $('#twitch-economy').addEventListener('change', e => { S.twitchEconomy = e.target.checked; syncTiles(); });
   $('#kick-economy').addEventListener('change', e => {
@@ -1033,15 +1248,92 @@ function setupBar() {
       else applyQuality(t.player);
     }
   });
-  $('#twitch-economy-reload').addEventListener('click', () => { if (economyView) reloadWebview(economyView); });
+  $('#twitch-economy-reload').addEventListener('click', () => {
+    for (const s of economyViews.values()) {
+      if (s.view) reloadWebview(s.view);
+    }
+  });
 
-  $$('[data-login]').forEach((b) => b.addEventListener('click', () => window.pf.openLogin(b.dataset.login)));
+  const profileSel = $('#live-profile');
+  if (profileSel) {
+    profileSel.addEventListener('change', (e) => {
+      S.liveProfile = e.target.value;
+      const activeBox = $('#profile-lives-active');
+      if (activeBox) activeBox.checked = S.profileLivesActive[S.liveProfile] !== false;
+      persist();
+      syncTiles();
+    });
+  }
+
+  const profileActiveBox = $('#profile-lives-active');
+  if (profileActiveBox) {
+    profileActiveBox.checked = S.profileLivesActive[S.liveProfile] !== false;
+    profileActiveBox.addEventListener('change', (e) => {
+      S.profileLivesActive[S.liveProfile] = e.target.checked;
+      persist();
+      syncTiles();
+    });
+  }
+
+  const compactBox = $('#compact-view');
+  if (compactBox) {
+    compactBox.checked = S.compactView;
+    compactBox.addEventListener('change', (e) => {
+      S.compactView = e.target.checked;
+      persist();
+      syncTiles();
+    });
+  }
+
+  const vProfile = $('#video-limit-profile');
+  if (vProfile) {
+    vProfile.value = String(S.videoLimitProfile);
+    vProfile.addEventListener('change', (e) => {
+      S.videoLimitProfile = Number(e.target.value) || 0;
+      persist();
+      syncTiles();
+    });
+  }
+
+  const vTotal = $('#video-limit-total');
+  if (vTotal) {
+    vTotal.value = String(S.videoLimitTotal);
+    vTotal.addEventListener('change', (e) => {
+      S.videoLimitTotal = Number(e.target.value) || 0;
+      persist();
+      syncTiles();
+    });
+  }
+
+  $('#profile-connections')?.addEventListener('click', () => {
+    S.gameAccount = S.liveProfile;
+    setTab('game');
+  });
+
+  $('#profile-login-twitch')?.addEventListener('click', () => {
+    const a = currentAccount();
+    window.pf.openLogin('twitch', accountPartition(a), a.name);
+  });
+  $('#profile-login-kick')?.addEventListener('click', () => {
+    const a = currentAccount();
+    window.pf.openLogin('kick', accountPartition(a), a.name);
+  });
+
+  $$('[data-login]').forEach((b) => b.addEventListener('click', () => {
+    const plat = b.dataset.login;
+    const acc = currentLiveAccount();
+    window.pf.openLogin(plat, accountPartition(acc), acc.name);
+  }));
+
   $$('[data-clear]').forEach((b) => b.addEventListener('click', () => {
     const w = b.dataset.clear;
-    const removed = all().filter(e => w === 'all' || e.p === w).map(e => `${e.p}:${e.i.channel}`);
+    const currentAccId = S.liveProfile || 'main';
+    const removed = all().filter(e => (w === 'all' || e.p === w) && (e.i.accountId || 'main') === currentAccId)
+      .map(e => `${e.p}:${e.i.channel}`);
     S.ignoredGameChannels = [...new Set([...S.ignoredGameChannels, ...removed])];
-    if (w === 'kick' || w === 'all') S.kick = [];
-    if (w === 'twitch' || w === 'all') S.twitch = [];
+    if (w === 'kick' || w === 'all') S.kick = S.kick.filter(x => (x.accountId || 'main') !== currentAccId);
+    if (w === 'twitch' || w === 'all') S.twitch = S.twitch.filter(x => (x.accountId || 'main') !== currentAccId);
+    persist();
     syncTiles();
   }));
 
@@ -1065,6 +1357,38 @@ function setupBar() {
     toast('Faça o login na janela que abriu. Depois clique em "Recarregar jogo".');
   });
 
+  const platformSel = $('#live-platform-filter');
+  if (platformSel) {
+    platformSel.value = S.livePlatformFilter;
+    platformSel.addEventListener('change', (e) => {
+      S.livePlatformFilter = e.target.value;
+      persist();
+      syncTiles();
+    });
+  }
+
+  const autoFollowBox = $('#auto-follow');
+  if (autoFollowBox) {
+    autoFollowBox.checked = S.autoFollow;
+    autoFollowBox.addEventListener('change', (e) => {
+      S.autoFollow = e.target.checked;
+      persist();
+    });
+  }
+
+  const marketAccSel = $('#market-account');
+  if (marketAccSel) {
+    marketAccSel.addEventListener('change', (e) => {
+      S.marketAccount = e.target.value;
+      persist();
+      for (const [id, g] of games) {
+        const isMarket = S.marketAccount !== 'off' && id === S.marketAccount;
+        g.market = isMarket;
+        g.wv?.executeJavaScript(`window.__pfEnableMarket && window.__pfEnableMarket(${isMarket})`).catch(() => {});
+      }
+    });
+  }
+
   $('#alerts-on').addEventListener('change', (e) => { M.enabled = e.target.checked; save('pf.alertsOn', M.enabled); });
   $('#poll').addEventListener('change', (e) => {
     M.poll = Number(e.target.value) || 60;
@@ -1085,6 +1409,29 @@ function setupBar() {
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') collapseChat(); });
 }
 
+function renderLiveProfileSelector() {
+  const sel = $('#live-profile');
+  if (!sel) return;
+  sel.replaceChildren(...S.accounts.map(a => el('option', { value: a.id, text: a.name || 'Conta' })));
+  if (!S.accounts.some(a => a.id === S.liveProfile)) S.liveProfile = S.accounts[0].id;
+  sel.value = S.liveProfile;
+  const activeBox = $('#profile-lives-active');
+  if (activeBox) activeBox.checked = S.profileLivesActive[S.liveProfile] !== false;
+}
+
+function renderMarketAccountSelector() {
+  const sel = $('#market-account');
+  if (!sel) return;
+  sel.replaceChildren(
+    el('option', { value: 'off', text: 'Desativado' }),
+    ...S.accounts.map(a => el('option', { value: a.id, text: a.name || 'Conta' }))
+  );
+  if (S.marketAccount !== 'off' && !S.accounts.some(a => a.id === S.marketAccount)) {
+    S.marketAccount = S.accounts[0]?.id || 'off';
+  }
+  sel.value = S.marketAccount;
+}
+
 // ---------------- Link de live clicado no jogo ----------------
 
 let toastTimer = null;
@@ -1101,13 +1448,15 @@ function addFromGame(link) {
   const name = link.split('/').pop();
   const plat = link.includes('twitch.tv') ? 'Twitch' : 'Kick';
   const before = all().length;
-  addChannels(link);
+  addChannels(link, S.liveProfile);
   toast(all().length > before ? `✓ ${name} (${plat}) adicionado às Lives` : `${name} já está nas Lives`);
 }
 
 // ---------------- Início ----------------
 
 setupBar();
+renderLiveProfileSelector();
+renderMarketAccountSelector();
 setTarget('kick');
 setupGame();
 renderAccountTabs();

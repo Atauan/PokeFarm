@@ -176,3 +176,21 @@ webview { background: #0b0b0c; }
 .game-pane.on { z-index: 1; visibility: visible; }
 .game-pane webview { width: 100%; height: 100%; display: flex; }
 #account-name { width: 200px; }
+
+/* Exibição compacta (oculta vídeo para reduzir GPU/CPU mantendo chat e pontos) */
+#grid.compact-view .player:not(.shared-twitch) { display: none !important; }
+#grid.compact-view .player.shared-twitch { height: 46px !important; min-height: 46px !important; flex: none !important; }
+#grid.compact-view .tile { min-height: 68px !important; }
+
+/* Teto de vídeos: canais em fila de reprodução */
+.tile.waiting-slot .player:not(.shared-twitch) { display: none !important; }
+.tile.waiting-slot .player.shared-twitch { height: 46px !important; min-height: 46px !important; flex: none !important; }
+.waiting-badge {
+  background: #d97706; color: #fff; font-size: 9px; font-weight: 700;
+  padding: 1px 5px; border-radius: 4px; text-transform: uppercase; margin-right: 4px;
+}
+.profile-tag {
+  font-size: 10px; color: var(--muted); border: 1px solid var(--line);
+  border-radius: 4px; padding: 0 4px; margin-left: 4px;
+}
+

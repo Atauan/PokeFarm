@@ -28,13 +28,24 @@
       <label class="inline">Colunas
         <select id="columns" aria-label="Colunas"></select>
       </label>
+      <label class="inline" title="Perfil ativo de lives (vinculado à conta do jogo)">Perfil
+        <select id="live-profile" aria-label="Perfil ativo de lives"></select>
+      </label>
+      <button id="profile-connections" title="Abrir a aba desta conta para gerenciar seus logins de Twitch e Kick">Conexões</button>
+      <label class="inline" title="Filtrar exibição de lives por plataforma">Plataformas
+        <select id="live-platform-filter" aria-label="Filtro de plataformas de lives">
+          <option value="both">Ambas</option>
+          <option value="twitch">Apenas Twitch</option>
+          <option value="kick">Apenas Kick</option>
+        </select>
+      </label>
       <button id="reset-layout" class="icon" title="Reorganizar: volta todos os blocos para a grade (arraste o título para mover, bordas/canto para redimensionar)" aria-label="Reorganizar blocos">▦</button>
       <button id="chat-toggle" class="icon toggle" title="Mostrar/esconder a faixa de pontos dos chats" aria-label="Mostrar/esconder chats">💬</button>
       <div class="menu">
         <button class="menu-btn">Entrar ▾</button>
         <div class="menu-list">
-          <button data-login="twitch">Entrar na Twitch</button>
-          <button data-login="kick">Entrar na Kick</button>
+          <button data-login="twitch">Entrar na Twitch (deste perfil)</button>
+          <button data-login="kick">Entrar na Kick (deste perfil)</button>
         </div>
       </div>
       <label class="inline" title="Qualidade de todas as lives (menor = menos peso)">Qualidade
@@ -62,7 +73,17 @@
         <input id="account-name" type="text" maxlength="30" aria-label="Nome da conta" placeholder="Nome da conta">
       </label>
       <span class="spacer"></span>
-      <button id="game-login" title="Entrar nesta conta (abre janela de login; funciona com Google)">🔑 Entrar</button>
+      <div class="menu">
+        <button class="menu-btn" title="Conectar contas Twitch e Kick vinculadas a este perfil">Conexões deste perfil ▾</button>
+        <div class="menu-list">
+          <button id="profile-login-twitch">Entrar na Twitch</button>
+          <button id="profile-login-kick">Entrar na Kick</button>
+        </div>
+      </div>
+      <label class="inline" title="Ativa a extensão /hunt for PokeIdle (analisador de rotas de caça)">
+        <input type="checkbox" id="game-hunt"> /hunt
+      </label>
+      <button id="game-login" title="Entrar nesta conta no Pokeidle (abre janela de login; funciona com Google)">🔑 Entrar no jogo</button>
       <button id="game-reload">⟳ Recarregar jogo</button>
       <button id="game-edge">🌐 Abrir no Edge</button>
       <button id="account-remove" title="Fecha esta aba e apaga o login dela">🗑 Remover conta</button>
@@ -92,10 +113,32 @@
         <button id="check-lives" title="Busca os canais do jogo e abre os online, mesmo com o automático desligado">Verificar agora</button>
       </div>
       <div id="twitch-economy-controls">
+        <label class="inline" title="Lives deste perfil ativas ou em pausa para este perfil"><input type="checkbox" id="profile-lives-active" checked> Lives deste perfil ativas</label>
         <label class="inline"><input type="checkbox" id="twitch-economy"> Twitch econômica (experimental)</label>
         <label class="inline" title="Qualidade mínima e chat leve, mantendo o vídeo e a faixa de pontos"><input type="checkbox" id="kick-economy"> Kick econômica</label>
+        <label class="inline" title="Oculta a área gráfica de vídeo dos blocos para reduzir o consumo da GPU e CPU, mantendo som e pontos"><input type="checkbox" id="compact-view"> Exibição compacta</label>
+        <label class="inline" title="Limite de vídeos reproduzindo simultaneamente por conta">Vídeos/perfil
+          <select id="video-limit-profile" aria-label="Vídeos por perfil">
+            <option value="1">Até 1</option>
+            <option value="2">Até 2</option>
+            <option value="3">Até 3</option>
+            <option value="0">Ilimitado</option>
+          </select>
+        </label>
+        <label class="inline" title="Limite de vídeos reproduzindo simultaneamente no total de todas as contas">Total vídeos
+          <select id="video-limit-total" aria-label="Total de vídeos">
+            <option value="2">Até 2</option>
+            <option value="4">Até 4</option>
+            <option value="6">Até 6</option>
+            <option value="0">Ilimitado</option>
+          </select>
+        </label>
+        <label class="inline small" title="Clica em Seguir/Follow automaticamente ao abrir lives para liberar acúmulo de pontos">
+          <input type="checkbox" id="auto-follow" checked> Seguir canais automaticamente
+        </label>
+        <span id="video-limit-status" class="muted small"></span>
         <span id="twitch-economy-status" role="status" class="muted"></span>
-        <button id="twitch-economy-reload" hidden>Reconectar Twitch</button>
+        <button id="twitch-economy-reload" hidden>Reconectar Twitch deste perfil</button>
         <span id="twitch-economy-help" class="muted small" hidden>Um chat compartilhado, sem vídeos. Confira os bônus no Pokeidle; este modo não garante Pontos do Canal da Twitch.</span>
         <span id="kick-economy-help" class="muted small" hidden>Kick: vídeo em qualidade mínima e mensagens ocultas na faixa de pontos. Abra o chat para consultar ou resgatar; novas mensagens voltam a aparecer.</span>
       </div>
@@ -121,6 +164,9 @@
           <div class="box">
             <div class="row">
               <label class="inline"><input type="checkbox" id="alerts-on"> Alertas ligados</label>
+              <label class="inline">Conta mercado
+                <select id="market-account" aria-label="Conta responsável por monitorar o mercado"></select>
+              </label>
               <label class="inline">Verificar a cada
                 <select id="poll">
                   <option value="30">30 s</option>
