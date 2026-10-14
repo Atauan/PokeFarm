@@ -19,6 +19,11 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.
 - Criação da pasta `docs/` e documentação de análise de desempenho e recomendações técnicas do projeto (`docs/analise-desempenho-e-melhorias.md`).
 - Registro detalhado da análise em [docs/changes/2026-10-14-1030--analise-de-desempenho-e-leitura-readme.md](docs/changes/2026-10-14-1030--analise-de-desempenho-e-leitura-readme.md).
 
+### Corrigido
+- Restaurada abertura imediata de todas as lives cadastradas sob a opção "Todas as contas", impedindo bloqueio indevido por flags de perfil inativo. Referência: [docs/changes/2026-10-14-1627--restaurar-abertura-lives-e-clique-jogo.md](docs/changes/2026-10-14-1627--restaurar-abertura-lives-e-clique-jogo.md).
+- Corrigida a captura de cliques em links de streamers oficiais dentro da modal de Bônus Twitch do Pokeidle, abrindo a live na grade imediatamente com confirmação em toast.
+- Corrigido o início da interface com classe ativa estática em `panel-lives`, prevenindo abertura de tela preta e garantindo renderização instantânea.
+
 ### Alterado
 - Otimização no Kick (Achado A01): cache do player e cancelamento do loop de busca do React Fiber assim que a qualidade 160p for ajustada, eliminando picos cíclicos de CPU a cada 3 segundos. Referência: [registro](docs/changes/2026-10-14-1430--fase-2-otimizacoes-filtro-plataforma-auto-follow.md).
 - Destruição real de elementos `<webview>` para canais excedentes do teto de vídeo (fila de espera), cessando a decodificação Chromium de vídeo e liberando processamento de GPU. Referência: [registro](docs/changes/2026-10-14-1430--fase-2-otimizacoes-filtro-plataforma-auto-follow.md).

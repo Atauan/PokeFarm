@@ -11,21 +11,19 @@
   <header id="bar">
     <div class="seg" id="tabs" role="tablist" aria-label="Abas">
       <button data-tab="lives" role="tab">Lives</button>
-      <span class="tab-divider"></span>
       <span id="account-tabs"></span>
       <button id="add-account" class="add-tab" title="Nova conta do Pokeidle (aba com login separado)" aria-label="Adicionar conta do Pokeidle">＋</button>
-      <span class="tab-divider"></span>
       <button data-tab="alerts" role="tab">Alertas</button>
     </div>
-
-    <span class="spacer"></span>
+    <div class="sep"></div>
 
     <div class="bar-part" id="bar-game" hidden>
       <label class="inline" title="Nome desta conta (aparece na aba)">👤
         <input id="account-name" type="text" maxlength="30" aria-label="Nome da conta" placeholder="Nome da conta">
       </label>
+      <span class="spacer"></span>
       <div class="menu">
-        <button class="menu-btn" title="Conectar contas Twitch e Kick vinculadas a este perfil">Conexões ▾</button>
+        <button class="menu-btn" title="Conectar contas Twitch e Kick vinculadas a este perfil">Conexões deste perfil ▾</button>
         <div class="menu-list">
           <button id="profile-login-twitch">Entrar na Twitch</button>
           <button id="profile-login-kick">Entrar na Kick</button>
@@ -46,7 +44,7 @@
   </header>
 
   <main id="stage">
-    <section id="panel-lives" class="panel">
+    <section id="panel-lives" class="panel active">
       <div id="bar-lives">
         <div class="live-row primary">
           <div class="seg" id="target" aria-label="Plataforma padrão para novos canais">
@@ -58,7 +56,7 @@
           <button id="add-btn" class="primary">Adicionar</button>
           <div class="sep"></div>
           <label class="inline" title="Filtrar exibição de lives por conta">Perfil
-            <select id="live-profile" aria-label="Perfil de lives"></select>
+            <select id="live-profile" aria-label="Perfil ativo de lives"></select>
           </label>
           <button id="profile-connections" title="Abrir a aba desta conta para gerenciar seus logins de Twitch e Kick">Conexões</button>
           <label class="inline" title="Filtrar exibição de lives por plataforma">Plataformas

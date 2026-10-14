@@ -31,7 +31,9 @@ const accountPartition = (a) => {
 };
 
 const normalizeChannelsList = (list) => (Array.isArray(list) ? list.map(item => {
-  if (item && typeof item === 'object' && !item.accountId) item.accountId = 'main';
+  if (item && typeof item === 'object') {
+    if (!item.accountId || item.accountId === 'all') item.accountId = 'main';
+  }
   return item;
 }) : []);
 
@@ -51,7 +53,7 @@ const S = {
   autoFollow: load('pf.autoFollow', true) !== false,
   marketAccount: load('pf.marketAccount', 'main'),
   profileLivesActive: load('pf.profileLivesActive', {}),
-  liveProfile: load('pf.liveProfile', 'main'),
+  liveProfile: load('pf.liveProfile', 'all'),
   gameChannels: normalizeGameChannels(load('pf.gameChannels', [])),
   ignoredGameChannels: load('pf.ignoredGameChannels', []),
   livePoll: [30, 60, 120, 300].includes(load('pf.livePoll', 60)) ? load('pf.livePoll', 60) : 60,
@@ -128,7 +130,9 @@ function receiveGameChannels(rows, fromAccountId) {
 
 function importGameChannels(targetAccountId) {
   let added = 0;
-  const accId = targetAccountId || S.liveProfile || 'main';
+  const accId = (targetAccountId && targetAccountId !== 'all')
+    ? targetAccountId
+    : (S.liveProfile && S.liveProfile !== 'all' ? S.liveProfile : (currentAccount()?.id || 'main'));
   const ignored = new Set(S.ignoredGameChannels);
   for (const { platform, channel } of S.gameChannels) {
     if (ignored.has(`${platform}:${channel}`) || S[platform].some(item => item.channel === channel && (item.accountId || 'main') === accId)) continue;
@@ -149,7 +153,9 @@ function cleanChannel(raw) {
 }
 
 function addChannels(text, targetAccountId) {
-  const accId = targetAccountId || (S.liveProfile && S.liveProfile !== 'all' ? S.liveProfile : (currentAccount()?.id || 'main'));
+  const accId = (targetAccountId && targetAccountId !== 'all')
+    ? targetAccountId
+    : (S.liveProfile && S.liveProfile !== 'all' ? S.liveProfile : (currentAccount()?.id || 'main'));
   for (const raw of String(text).split(/[,\s]+/)) {
     const c = cleanChannel(raw);
     if (!c) continue;
@@ -159,9 +165,10 @@ function addChannels(text, targetAccountId) {
     if (!S[p].some((x) => x.channel === c && (x.accountId || 'main') === accId)) {
       S[p].push({ id: uid(), channel: c, muted: true, accountId: accId });
     }
-    if (!S.autoLives) {
-      const item = S[p].find(x => x.channel === c && (x.accountId || 'main') === accId);
-      if (item) liveStates.set(item.id, nextLiveState(null, 'unknown', true));
+    const item = S[p].find(x => x.channel === c && (x.accountId || 'main') === accId);
+    if (item) {
+      const prev = liveStates.get(item.id);
+      liveStates.set(item.id, nextLiveState(prev, 'online', true));
     }
   }
   persist();
@@ -436,14 +443,17 @@ function syncTiles() {
   const matchesPlatform = (p) => filter === 'both' || filter === p;
 
   const profileFilter = S.liveProfile || 'all';
-  const matchesProfile = (accId) => profileFilter === 'all' || profileFilter === accId;
+  const matchesProfile = (accId) => {
+    if (!profileFilter || profileFilter === 'all') return true;
+    return accId === profileFilter || accId === 'main';
+  };
 
-  // Um canal só abre se estiver online, pertencer à plataforma permitida E o perfil a que pertence estiver ativo
+  // Um canal só abre se estiver online, pertencer à plataforma permitida e não estiver pausado
   const open = saved.filter((e) => {
     if (!matchesPlatform(e.p)) return false;
-    const accId = e.i.accountId || 'main';
+    const accId = e.i.accountId || S.accounts[0]?.id || 'main';
     if (!matchesProfile(accId)) return false;
-    const isActive = S.profileLivesActive[accId] !== false;
+    const isActive = profileFilter === 'all' || S.profileLivesActive[accId] !== false;
     return isActive && liveStates.get(e.i.id)?.open;
   });
 
@@ -1152,8 +1162,10 @@ function setTab(tab) {
   }
   $('#panel-lives').classList.toggle('active', tab === 'lives');
   $('#panel-game').classList.toggle('active', tab === 'game');
-  $('#panel-alerts').classList.toggle('active', tab === 'alerts');
-  $('#bar-lives').hidden = tab !== 'lives';
+  const barLives = $('#bar-lives');
+  if (barLives && barLives.parentElement === $('#bar')) {
+    barLives.hidden = tab !== 'lives';
+  }
   $('#bar-game').hidden = tab !== 'game';
   $('#bar-alerts').hidden = tab !== 'alerts';
   if (tab === 'alerts') renderAlerts();
@@ -1462,6 +1474,7 @@ function renderMarketAccountSelector() {
 let toastTimer = null;
 function toast(msg) {
   const t = $('#toast');
+  if (!t) return;
   t.textContent = msg;
   t.hidden = false;
   clearTimeout(toastTimer);
@@ -1473,19 +1486,35 @@ function addFromGame(link) {
   const name = link.split('/').pop();
   const plat = link.includes('twitch.tv') ? 'Twitch' : 'Kick';
   const before = all().length;
-  addChannels(link, S.liveProfile);
+  const targetAcc = (S.liveProfile && S.liveProfile !== 'all') ? S.liveProfile : (currentAccount()?.id || 'main');
+  addChannels(link, targetAcc);
+  const p = plat.toLowerCase();
+  const c = cleanChannel(name);
+  if (c) {
+    const item = S[p].find(x => x.channel === c && (x.accountId || 'main') === targetAcc);
+    if (item) {
+      const prev = liveStates.get(item.id);
+      liveStates.set(item.id, nextLiveState(prev, 'online', true));
+      syncTiles();
+    }
+  }
   toast(all().length > before ? `✓ ${name} (${plat}) adicionado às Lives` : `${name} já está nas Lives`);
 }
 
 // ---------------- Início ----------------
 
-setupBar();
-renderLiveProfileSelector();
-renderMarketAccountSelector();
-setTarget('kick');
-setupGame();
-renderAccountTabs();
-importGameChannels();
-scheduleLiveChecks();
-setTab(S.tab);
-renderAlerts();
+try {
+  setupBar();
+  renderLiveProfileSelector();
+  renderMarketAccountSelector();
+  setTarget('kick');
+  setupGame();
+  renderAccountTabs();
+  importGameChannels();
+  scheduleLiveChecks();
+  setTab(S.tab || 'lives');
+  renderAlerts();
+} catch (err) {
+  console.error('Falha na inicialização do PokeFarm:', err);
+  setTab('lives');
+}
