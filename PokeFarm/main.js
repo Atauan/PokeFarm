@@ -243,6 +243,7 @@ function setupSession(part) {
   });
   ses.registerPreloadScript({ id: 'pf-game-channels', type: 'frame', filePath: path.join(__dirname, 'game-channels.js') });
   ses.registerPreloadScript({ id: 'pf-game-session', type: 'frame', filePath: path.join(__dirname, 'game-session.js') });
+  ses.registerPreloadScript({ id: 'pf-pokeidle-hunt', type: 'frame', filePath: path.join(__dirname, 'pokeidle-hunt.js') });
   ses.registerPreloadScript({ id: 'pf-twitch-economy', type: 'frame', filePath: path.join(__dirname, 'twitch-economy.js') });
   ses.registerPreloadScript({ id: 'pf-kick-economy', type: 'frame', filePath: path.join(__dirname, 'kick-economy.js') });
 }
@@ -408,12 +409,14 @@ ipcMain.on('open-edge', (e, url) => {
 
 // Login numa janela própria (não numa webview): o Google recusa login dentro de webview embutida.
 // Aceita os pop-ups de OAuth (Google/Twitch/Kick) como janelas-filhas na mesma sessão.
-ipcMain.on('open-login', (e, platform, partition) => {
+ipcMain.on('open-login', (e, platform, partition, label) => {
   const url = LOGIN_URLS[platform];
   if (!fromApp(e) || !url) return;
   const part = ACCOUNT_PARTITION.test(partition || '') ? partition : PARTITION;
   setupSession(part);
-  openLoginWindow(url, platform === 'twitch' ? 'Entrar na Twitch' : 'Entrar na Kick', part);
+  const platName = platform === 'twitch' ? 'Twitch' : 'Kick';
+  const cleanLabel = typeof label === 'string' && label.trim() ? ` (${label.trim().slice(0, 30)})` : '';
+  openLoginWindow(url, `Entrar na ${platName}${cleanLabel}`, part);
 });
 
 ipcMain.on('open-game-login', (e, partition) => {

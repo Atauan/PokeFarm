@@ -13,7 +13,7 @@ contextBridge.exposeInMainWorld('pf', {
   notify: (title, body) => ipcRenderer.send('notify', { title: String(title), body: String(body) }),
   attention: () => ipcRenderer.send('attention'),
   openEdge: (url) => ipcRenderer.send('open-edge', String(url)),
-  openLogin: (platform, partition) => ipcRenderer.send('open-login', String(platform), partition ? String(partition) : null),
+  openLogin: (platform, partition, label) => ipcRenderer.send('open-login', String(platform), partition ? String(partition) : null, label ? String(label) : null),
   openGameLogin: (partition) => ipcRenderer.send('open-game-login', partition ? String(partition) : null),
   writeSample: (url, text) => ipcRenderer.send('write-sample', { url: String(url), text: String(text).slice(0, 30000) }),
   openDataDir: () => ipcRenderer.send('open-data-dir'),
