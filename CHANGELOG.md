@@ -7,7 +7,10 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.
 ## [Não publicado]
 
 ### Adicionado
-- Filtro de plataforma de lives ("Ambas", "Apenas Twitch", "Apenas Kick") que destrói os processos das webviews desativadas para economizar CPU e RAM. Referência: [registro](docs/changes/2026-10-14-1430--fase-2-otimizacoes-filtro-plataforma-auto-follow.md).
+- Pareamento de lives lado a lado por streamer (Opção 1) no modo geral, agrupando transmissões do mesmo canal entre perfis com 2 colunas simétricas. Referência: [docs/changes/2026-10-14-1845--pareamento-lives-por-streamer-e-tags-perfil.md](docs/changes/2026-10-14-1845--pareamento-lives-por-streamer-e-tags-perfil.md).
+- Tags visuais coloridas de perfil no cabeçalho de cada bloco (`profile-badge`) e botão de seguir/inscrever (`btn-follow`) com script direto sem loops.
+- Filtro rápido de contas na barra primária de lives (`#live-account-filter`) com contadores em tempo real.
+- Trava de prevenção contra canais duplicados na mesma conta de usuário.
 - Opção de auto-follow configurável para Twitch e Kick, seguindo o canal ao abrir a live para garantir contabilização dos pontos. Referência: [registro](docs/changes/2026-10-14-1430--fase-2-otimizacoes-filtro-plataforma-auto-follow.md).
 - Seletor de conta para o monitor de mercado Pokeidle (Desativado ou conta específica), evitando varreduras redundantes em múltiplas contas. Referência: [registro](docs/changes/2026-10-14-1430--fase-2-otimizacoes-filtro-plataforma-auto-follow.md).
 - Suporte a multi-contas Twitch e Kick vinculadas por perfil de jogo Pokeidle com sessões isoladas (`accountPartition`), permitindo conexões independentes por aba e resgate de pontos. Referência: [registro](docs/changes/2026-10-14-1235--multi-contas-twitch-kick-e-limites-lives.md).
