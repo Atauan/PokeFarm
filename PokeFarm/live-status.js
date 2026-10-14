@@ -9,8 +9,9 @@ function createLiveStatusService(fetch) {
   let clientRequest = null;
 
   async function request(url, options = {}) {
+    const timeoutMs = options.timeout || 4000;
     const response = await fetch(url, {
-      ...options, signal: AbortSignal.timeout(15000), cache: 'no-store',
+      ...options, signal: AbortSignal.timeout(timeoutMs), cache: 'no-store',
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response;

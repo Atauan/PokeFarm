@@ -193,7 +193,7 @@ function pumpLoadQueue() {
     const job = loadQueue.shift();
     try { if (job()) lastPageLoad = performance.now(); } catch (_) { /* a página pode ter sido removida */ }
     pumpLoadQueue();
-  }, Math.max(0, 1500 - (performance.now() - lastPageLoad)));
+  }, Math.max(0, 300 - (performance.now() - lastPageLoad)));
 }
 
 function makeWebview(src, opts = {}) {
