@@ -76,6 +76,7 @@ input[type=text] { min-width: 0; }
 .panel { position: absolute; inset: 0; z-index: 0; pointer-events: none; background: var(--bg); }
 .panel.active { z-index: 2; pointer-events: auto; }
 #panel-alerts:not(.active) { visibility: hidden; }
+#panel-lives:not(.active) { visibility: hidden; }
 #panel-game webview { width: 100%; height: 100%; display: flex; }
 
 #panel-lives { display: flex; flex-direction: column; }

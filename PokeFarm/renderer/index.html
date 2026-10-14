@@ -55,17 +55,11 @@
                  placeholder="Canal ou link (vários separados por vírgula)">
           <button id="add-btn" class="primary">Adicionar</button>
           <div class="sep"></div>
-          <label class="inline" title="Filtrar exibição de lives por conta">Perfil
-            <select id="live-profile" aria-label="Perfil ativo de lives"></select>
+          <label class="inline">Colunas
+            <select id="columns" aria-label="Colunas"></select>
           </label>
-          <button id="profile-connections" title="Abrir a aba desta conta para gerenciar seus logins de Twitch e Kick">Conexões</button>
-          <label class="inline" title="Filtrar exibição de lives por plataforma">Plataformas
-            <select id="live-platform-filter" aria-label="Filtro de plataformas de lives">
-              <option value="both">Ambas</option>
-              <option value="twitch">Apenas Twitch</option>
-              <option value="kick">Apenas Kick</option>
-            </select>
-          </label>
+          <button id="reset-layout" class="icon" title="Reorganizar: volta todos os blocos para a grade" aria-label="Reorganizar blocos">▦</button>
+          <button id="chat-toggle" class="icon toggle" title="Mostrar/esconder a faixa de pontos dos chats" aria-label="Mostrar/esconder chats">💬</button>
           <div class="sep"></div>
           <label class="inline" title="Qualidade de todas as lives (menor = menos peso)">Qualidade
             <select id="quality" aria-label="Qualidade das lives">
@@ -75,11 +69,6 @@
               <option value="0">Automática</option>
             </select>
           </label>
-          <label class="inline">Colunas
-            <select id="columns" aria-label="Colunas"></select>
-          </label>
-          <button id="reset-layout" class="icon" title="Reorganizar: volta todos os blocos para a grade" aria-label="Reorganizar blocos">▦</button>
-          <button id="chat-toggle" class="icon toggle" title="Mostrar/esconder a faixa de pontos dos chats" aria-label="Mostrar/esconder chats">💬</button>
           <div class="sep"></div>
           <div class="menu">
             <button class="menu-btn">Entrar ▾</button>
@@ -89,7 +78,7 @@
             </div>
           </div>
           <button id="mute-all" title="Silenciar todos os canais">Silenciar todos</button>
-          <button id="reload-all" class="icon" title="Recarregar tudo" aria-label="Recarregar tudo">⟳</button>
+          <button id="reload-all" class="icon" title="Recarregar tudo (use depois de fazer login)" aria-label="Recarregar tudo">⟳</button>
           <div class="menu">
             <button class="menu-btn">Limpar ▾</button>
             <div class="menu-list right">
@@ -112,17 +101,15 @@
               <option value="300">5 min</option>
             </select>
           </label>
-          <button id="check-lives" title="Busca os canais do jogo e abre os online">Verificar agora</button>
+          <button id="check-lives" title="Busca os canais do jogo e abre os online, mesmo com o automático desligado">Verificar agora</button>
           <span id="live-summary" class="muted small" role="status"></span>
           <div class="sep"></div>
-          <label class="inline small" id="profile-active-wrap" title="Pausa ou ativa a execução das lives desta conta">
-            <input type="checkbox" id="profile-lives-active" checked> <span id="profile-active-label">Lives ativas</span>
-          </label>
-          <div class="sep"></div>
-          <label class="inline small" title="Substitui vídeos por chat compartilhado sem renderização"><input type="checkbox" id="twitch-economy"> Twitch econômica</label>
-          <label class="inline small" title="Qualidade mínima e chat leve"><input type="checkbox" id="kick-economy"> Kick econômica</label>
+          <label class="inline small" title="Substitui vídeos por chat compartilhado sem renderização"><input type="checkbox" id="twitch-economy"> Twitch econômica (experimental)</label>
+          <label class="inline small" title="Qualidade mínima e chat leve, mantendo o vídeo e a faixa de pontos"><input type="checkbox" id="kick-economy"> Kick econômica</label>
           <span id="twitch-economy-status" role="status" class="muted small"></span>
           <button id="twitch-economy-reload" class="small" hidden>Reconectar Twitch</button>
+          <span id="twitch-economy-help" class="muted small" hidden>Um chat compartilhado, sem vídeos.</span>
+          <span id="kick-economy-help" class="muted small" hidden>Kick: vídeo em qualidade mínima.</span>
         </div>
       </div>
       <div id="live-area">
@@ -147,9 +134,6 @@
           <div class="box">
             <div class="row">
               <label class="inline"><input type="checkbox" id="alerts-on"> Alertas ligados</label>
-              <label class="inline">Conta mercado
-                <select id="market-account" aria-label="Conta responsável por monitorar o mercado"></select>
-              </label>
               <label class="inline">Verificar a cada
                 <select id="poll">
                   <option value="30">30 s</option>

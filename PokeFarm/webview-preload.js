@@ -265,14 +265,8 @@ function compactChat() {
 function market() {
   if (window.__pfMarket) return;
   window.__pfMarket = true;
-  window.__pfMarketEnabled = false;
-  window.__pfEnableMarket = (enabled) => {
-    window.__pfMarketEnabled = enabled === true;
-  };
   window.__pfPoll = window.__pfPoll || 60;
-  const post = (o) => {
-    if (window.__pfMarketEnabled) window.postMessage({ __pfMarket: o }, '*');
-  };
+  const post = (o) => window.postMessage({ __pfMarket: o }, '*');
   const WANT = /market|mercado|rmt|listing|offer|oferta|auction|leil|trade|anunc/i;
   const replay = {};
   const NAME = /^(name|nome|displayName|speciesName|pokemonName|itemName|title|species|pokemon|item)$/i;
@@ -360,11 +354,9 @@ function market() {
   // Repete as leituras GET do mercado periodicamente (as 5 mais recentes)
   (function tick() {
     setTimeout(() => {
-      if (window.__pfMarketEnabled) {
-        Object.keys(replay).sort((a, b) => replay[b] - replay[a]).slice(0, 5).forEach((u) => {
-          origFetch(u, { credentials: 'include' }).then((r) => r.text()).then((t) => handle(u, 'GET', t, true)).catch(() => {});
-        });
-      }
+      Object.keys(replay).sort((a, b) => replay[b] - replay[a]).slice(0, 5).forEach((u) => {
+        origFetch(u, { credentials: 'include' }).then((r) => r.text()).then((t) => handle(u, 'GET', t, true)).catch(() => {});
+      });
       tick();
     }, Math.max(15, window.__pfPoll || 60) * 1000);
   })();
@@ -381,7 +373,6 @@ function market() {
     return isNaN(v) ? null : v * m;
   }
   setInterval(() => {
-    if (!window.__pfMarketEnabled) return;
     const out = [];
     document.querySelectorAll('button, a').forEach((b) => {
       if (!/ver ofertas/i.test(b.textContent || '')) return;
@@ -418,11 +409,6 @@ inject(keepAlive);
 
 if (/pokeidle\.io$/.test(host)) {
   inject(market);
-  try {
-    require('./pokeidle-hunt.js').installPokeidleHunt();
-  } catch (err) {
-    console.error('[PokeFarm] Falha ao carregar pokeidle-hunt:', err);
-  }
   // Página -> app (o mundo isolado escuta as mensagens da página)
   window.addEventListener('message', (e) => {
     if (e.source !== window || !e.data || typeof e.data.__pfMarket !== 'object') return;
