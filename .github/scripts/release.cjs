@@ -63,8 +63,15 @@ function stampVersion(root, version) {
 }
 
 async function releaseFiles(directory, version) {
-  const names = [`PokeFarm-Setup-${version}.exe`, `PokeFarm-Portable-${version}.exe`,
-    `PokeFarm-${version}-arm64.dmg`, `PokeFarm-${version}-x64.dmg`, `PokeFarm-Swift-${version}-universal.zip`].sort();
+  const names = [
+    `PokeFarm-Setup-${version}.exe`,
+    `PokeFarm-Portable-${version}.exe`,
+    `PokeFarm-${version}-arm64.dmg`,
+    `PokeFarm-${version}-x64.dmg`,
+    `PokeFarm-${version}-x64.AppImage`,
+    `PokeFarm-${version}-amd64.deb`,
+    `PokeFarm-Swift-${version}-universal.zip`,
+  ].sort();
   const files = names.map(name => path.join(directory, name));
   for (const file of files) {
     if (!fs.existsSync(file) || !fs.statSync(file).isFile() || fs.statSync(file).size === 0) {
@@ -96,7 +103,7 @@ async function publishRelease({ api, version, sha, directory }) {
     const notes = await api.request('POST', '/releases/generate-notes', { tag_name: tag, target_commitish: sha });
     release = await api.request('POST', '/releases', {
       tag_name: tag, target_commitish: sha, name: `PokeFarm ${version}`,
-      body: `${marker(sha)}\n\n${notes.body || ''}\n\nInstaladores Electron para Windows e macOS, app Swift universal para macOS e SHA256SUMS.txt anexados.`,
+      body: `${marker(sha)}\n\n${notes.body || ''}\n\nInstaladores Electron para Windows, macOS e Linux, app Swift universal para macOS e SHA256SUMS.txt anexados.`,
       draft: true, prerelease: false, make_latest: 'false',
     });
   }

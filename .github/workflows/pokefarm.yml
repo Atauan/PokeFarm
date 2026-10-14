@@ -51,6 +51,8 @@ jobs:
             script: dist:mac
           - os: windows-latest
             script: dist:win
+          - os: ubuntu-latest
+            script: dist:linux
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -87,6 +89,8 @@ jobs:
           path: |
             PokeFarm/dist/*.dmg
             PokeFarm/dist/*.exe
+            PokeFarm/dist/*.AppImage
+            PokeFarm/dist/*.deb
             PokeFarm/dist/PokeFarm-Swift-*.zip
 
   publish:
